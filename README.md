@@ -16,7 +16,7 @@ where the web UI computes views client-side.
 ## Install
 
 ```bash
-pip install git+https://github.com/YOUR_USER/quicken-simplifi-api.git
+pip install git+https://github.com/soluwalana/simplifi-api.git
 # or from a checkout:
 pip install -e ".[dev]"
 ```

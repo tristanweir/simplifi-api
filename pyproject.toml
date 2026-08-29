@@ -36,8 +36,8 @@ dev = [
 simplifi = "simplifi.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/example/quicken-simplifi-api"
-Issues = "https://github.com/example/quicken-simplifi-api/issues"
+Homepage = "https://github.com/soluwalana/simplifi-api"
+Issues = "https://github.com/soluwalana/simplifi-api/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/simplifi"]
