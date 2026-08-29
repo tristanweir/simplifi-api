@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Local credentials / exports (never commit)
+.simplifi/
+*.token.json
+tokens.json
+exports/
+*.har
+!tests/fixtures/**/*.json
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
