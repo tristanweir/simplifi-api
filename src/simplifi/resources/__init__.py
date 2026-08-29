@@ -144,8 +144,10 @@ class Resources:
         params: dict[str, Any] = {"limit": limit}
         if account_id:
             params["accountId"] = account_id
+        # Prefer /v2 — /investments/holdings often returns an empty page and
+        # short-circuits the fallback chain.
         return self._try_paginated(
-            ["/investments/holdings", "/holdings", "/v2/investments/holdings"],
+            ["/v2/investments/holdings", "/investments/holdings"],
             params=params,
         )
 
