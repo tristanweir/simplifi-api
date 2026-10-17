@@ -131,6 +131,15 @@ The older single-update workflow retains separately authorized historical applic
 See [transaction-rule workflow](docs/transaction-rules.md) for API
 field names, CLI commands, preview coverage, and backfill limitations.
 
+## Check reconciliation skill
+
+The repository includes
+[schwab-check-reconciliation](.agents/skills/schwab-check-reconciliation/SKILL.md)
+for matching Simplifi checks to Schwab records and reading payees from check images.
+It favors local cached transaction reads, verifies account/number/amount matches,
+and reports uncertainty before any separately authorized edits. The skill contains
+no account data; private evidence stays in ignored local storage.
+
 ## Tests and contributing upstream
 
 Bound analytics views fetch inputs only when omitted or `None`; an explicit empty

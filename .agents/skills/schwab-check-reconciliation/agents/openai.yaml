@@ -1,0 +1,4 @@
+interface:
+  display_name: "Schwab Check Reconciliation"
+  short_description: "Match Simplifi checks to Schwab images and amounts"
+  default_prompt: "Use $schwab-check-reconciliation to identify my Simplifi checks from Schwab check images, verify their amounts, and report unresolved matches before changing anything."
