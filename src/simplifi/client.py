@@ -120,9 +120,7 @@ class Client:
     def transaction(self, transaction_id: str) -> dict[str, Any]:
         return self.resources.transaction(transaction_id)
 
-    def transactions_earliest_date_on(
-        self, account_ids: list[str] | None = None
-    ) -> dict[str, Any]:
+    def transactions_earliest_date_on(self, account_ids: list[str] | None = None) -> dict[str, Any]:
         return self.resources.transactions_earliest_date_on(account_ids)
 
     def categories(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -163,6 +161,21 @@ class Client:
 
     def alert_rules(self, **kwargs: Any) -> list[dict[str, Any]]:
         return self.resources.alert_rules(**kwargs)
+
+    def transaction_rules(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return self.resources.transaction_rules(**kwargs)
+
+    def transaction_rule(self, rule_id: str) -> dict[str, Any]:
+        matches = [
+            r
+            for r in self.transaction_rules()
+            if str(r.get("id")) == str(rule_id) and not r.get("isDeleted")
+        ]
+        if len(matches) != 1:
+            from simplifi.errors import SimplifiError
+
+            raise SimplifiError("Rule not found or not unique")
+        return matches[0]
 
     def alerts(self, **kwargs: Any) -> list[dict[str, Any]]:
         return self.resources.alerts(**kwargs)

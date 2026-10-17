@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 simplifi = "simplifi.local_cli:main"
+simplifi-rules = "simplifi.rules_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/tristanweir/simplifi-api"

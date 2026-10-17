@@ -16,9 +16,7 @@ class Resources:
     # --- Core ---
 
     def datasets(self, *, limit: int = DEFAULT_PAGE_LIMIT) -> list[dict[str, Any]]:
-        return self._http.get_paginated(
-            "/datasets", params={"limit": limit}, require_dataset=False
-        )
+        return self._http.get_paginated("/datasets", params={"limit": limit}, require_dataset=False)
 
     def accounts(
         self,
@@ -65,9 +63,7 @@ class Resources:
     def transaction(self, transaction_id: str) -> dict[str, Any]:
         return self._http.get(f"/transactions/{transaction_id}")
 
-    def transactions_earliest_date_on(
-        self, account_ids: list[str] | None = None
-    ) -> dict[str, Any]:
+    def transactions_earliest_date_on(self, account_ids: list[str] | None = None) -> dict[str, Any]:
         return self._http.post(
             "/transactions/earliest-date-on",
             json={"accountIds": account_ids or []},
@@ -166,6 +162,9 @@ class Resources:
 
     # --- Settings / reference (read) ---
 
+    def transaction_rules(self, *, limit: int = 5000) -> list[dict[str, Any]]:
+        return self._http.get_paginated("/transaction-rules", limit=limit)
+
     def preferences(self) -> dict[str, Any] | list[dict[str, Any]] | None:
         return self._try_get(["/preferences", "/user/preferences"])
 
@@ -173,9 +172,7 @@ class Resources:
         return self._try_paginated(["/filters"], params={"limit": limit})
 
     def alert_rules(self, *, limit: int = DEFAULT_PAGE_LIMIT) -> list[dict[str, Any]]:
-        return self._try_paginated(
-            ["/alert-rules", "/alerts/rules"], params={"limit": limit}
-        )
+        return self._try_paginated(["/alert-rules", "/alerts/rules"], params={"limit": limit})
 
     def alerts(self, *, limit: int = DEFAULT_PAGE_LIMIT) -> list[dict[str, Any]]:
         return self._try_paginated(["/alerts"], params={"limit": limit})
@@ -186,9 +183,7 @@ class Resources:
     def institutions(self, *, limit: int = DEFAULT_PAGE_LIMIT) -> list[dict[str, Any]]:
         return self._try_paginated(["/institutions"], params={"limit": limit})
 
-    def report_configurations(
-        self, *, limit: int = DEFAULT_PAGE_LIMIT
-    ) -> list[dict[str, Any]]:
+    def report_configurations(self, *, limit: int = DEFAULT_PAGE_LIMIT) -> list[dict[str, Any]]:
         return self._try_paginated(
             ["/report-configurations", "/reports/configurations", "/saved-reports"],
             params={"limit": limit},
@@ -208,9 +203,7 @@ class Resources:
 
     # --- helpers ---
 
-    def _try_paginated(
-        self, paths: list[str], *, params: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+    def _try_paginated(self, paths: list[str], *, params: dict[str, Any]) -> list[dict[str, Any]]:
         last_error: Exception | None = None
         for path in paths:
             try:

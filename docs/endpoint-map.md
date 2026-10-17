@@ -23,6 +23,15 @@ Headers on data calls: `Authorization: Bearer …`, `Qcs-Dataset-Id`, `app-clien
 
 ## Core data
 
+| Transaction-rule operation | Method | Path | Interface |
+|---|---|---|---|
+| List | GET | `/transaction-rules` | `Client.transaction_rules()` |
+| Preview (no save) | POST | `/categories-aggregation/preview/txn-rule` | `preview_rule()` / `prepare_rule_update()` |
+| Approved single update | PUT | `/transaction-rules/{id}` | `apply_rule_update()` |
+
+See [rule workflow](transaction-rules.md). Saved rules are read in API format;
+`applyToExistingTransactions` defaults to false on every new update plan.
+
 The fork also exposes an opt-in `simplifi.category_update.update_category` helper
 for `PUT /transactions/{id}`. It is not enabled on the ordinary read-only HTTP client.
 It requires a fresh unsplit CASH_FLOW original, a specific target category, an

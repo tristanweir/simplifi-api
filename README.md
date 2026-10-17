@@ -119,6 +119,15 @@ cannot be excluded. A timeout means the outcome is uncertain: read the transacti
 before considering a retry. Restoring a category requires a fresh read and the
 original category; never replay a stale whole-record backup.
 
+## Transaction rules
+
+`Client.transaction_rules()` and `Client.transaction_rule(id)` read transaction
+rules. The opt-in `simplifi.transaction_rules` module adds dry-run previews,
+encrypted plans/backups, explicit confirmation, and scoped single-rule updates.
+Future-only application is the default; historical application requires a separate
+explicit flag. See [transaction-rule workflow](docs/transaction-rules.md) for API
+field names, CLI commands, preview coverage, and backfill limitations.
+
 ## Tests and contributing upstream
 
 ```powershell
