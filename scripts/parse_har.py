@@ -3,10 +3,10 @@
 
 Usage:
   1. Sign in to https://simplifi.quicken.com in Chrome/Firefox.
-  2. Open DevTools → Network, enable "Preserve log".
+  2. Open DevTools -> Network, enable "Preserve log".
   3. Visit each Personal tab (Dashboard, Spending Plan, Bills & Income, Goals,
      Planning Tools, Investments, Watchlist, Reports, Transactions, Settings).
-  4. Export HAR (right-click the request list → Save all as HAR).
+  4. Export HAR (right-click the request list -> Save all as HAR).
   5. Run:
        python scripts/parse_har.py path/to/export.har
 
@@ -78,7 +78,7 @@ def main() -> int:
     for key in sorted(counts):
         method, path = key.split(" ", 1)
         slug = path.strip("/").replace("/", "_").replace("-", "_") or "root"
-        print(f"- `{method} {path}` → `Client` / `Resources.{slug}()`")
+        print(f"- `{method} {path}` -> `Client` / `Resources.{slug}()`")
     return 0
 
 

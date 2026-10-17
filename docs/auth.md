@@ -1,49 +1,19 @@
-# Authentication
+# Local authentication
 
-## Interactive login (recommended)
+Preferred: `browser-login.cmd` or `run.ps1 browser-login`. Complete sign-in and
+MFA yourself on Quicken's website in the dedicated browser window. The helper
+captures only the successful token endpoint response from that isolated context,
+verifies direct API reads, then saves the tokens using Windows DPAPI. It preserves
+existing tokens if verification fails. It does not inspect form fields, request
+bodies, your existing browser profile, or exported storage state.
 
-```bash
-pip install -e .
-simplifi login
-```
+Use `login.cmd` or `run.ps1 login` and enter credentials in the local terminal.
+See [the README](../README.md#authentication-and-data-handling) for storage, scope,
+and limitations. This fork uses Windows DPAPI and does not support plaintext
+token-file import. No live authentication has been verified until a local check
+succeeds. Never share your password, MFA, HAR files, or tokens in chat.
 
-You will be prompted for email/password. If Quicken issues MFA, enter the code when
-asked. Access and refresh tokens are stored at `~/.simplifi/tokens.json` (mode 0600)
-or `SIMPLIFI_TOKEN_PATH`.
-
-Later commands reuse the refresh token when possible — no MFA on every run.
-
-## Environment variables
-
-See `.env.example`:
-
-| Variable | Purpose |
-|----------|---------|
-| `SIMPLIFI_EMAIL` / `SIMPLIFI_PASSWORD` | Login credentials |
-| `SIMPLIFI_DATASET_ID` | Optional override of `qcs-dataset-id` |
-| `SIMPLIFI_THREAT_METRIX_SESSION_ID` | Optional browser session id if login fails |
-| `SIMPLIFI_TOKEN_PATH` | Custom token file location |
-
-## Finding your dataset id
-
-Simplifi identifies the household with the `qcs-dataset-id` header. This package
-normally resolves it via `GET /datasets`. To capture it from the browser:
-
-1. Sign in at https://simplifi.quicken.com
-2. DevTools → Network → any `services.quicken.com` request
-3. Read Request Headers → `qcs-dataset-id`
-
-## Manual access token
-
-```python
-from simplifi import Client
-
-client = Client()
-client.use_token("...", refresh_token="...")  # refresh optional but recommended
-```
-
-## Security notes
-
-- Never commit tokens, HARs, or transaction exports.
-- This client is **read-only** by construction (mutating HTTP methods raise).
-- Comply with Quicken Simplifi Terms of Service; use only against accounts you own.
+Terminal sign-in revision `session-state-v2` includes the session-state headers
+and MFA request-ID handoff observed in the production website on 2026-10-17.
+The browser flow lets Quicken manage those details directly. Diagnostic errors
+contain HTTP status and validated QCS codes only; response details are suppressed.

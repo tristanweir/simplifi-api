@@ -1,40 +1,46 @@
 # Contributing
 
-Thanks for helping keep this unofficial client aligned with the live Simplifi web app.
+This fork preserves [soluwalana/simplifi-api](https://github.com/soluwalana/simplifi-api)
+as upstream. Keep changes small enough to review and contribute independently.
 
 ## Principles
 
-1. **Read-only.** Do not add PUT/PATCH/DELETE helpers for money data.
-2. **Personal only.** Skip Business & Personal modules (invoices, mileage, etc.).
-3. **No real household data in the repo.** Fixtures must be synthetic.
-4. **Document endpoint changes** in `docs/endpoint-map.md`.
+1. The normal Client and CLI stay read-only. The category writer is explicit and scoped.
+2. Personal accounts only; no Business & Personal write flows.
+3. All committed fixtures must be synthetic. Never commit authentication state, HARs,
+   transaction exports, household details, local absolute paths, or encrypted backups.
+4. Document endpoint changes in `docs/endpoint-map.md`.
+5. Authentication errors must not contain response bodies, token values, or passwords.
 
-## Adding or fixing an endpoint
+## Development
 
-1. Capture a HAR from https://simplifi.quicken.com while exercising the feature
-   (see `scripts/parse_har.py`).
-2. Confirm method + path + required headers (`Authorization`, `qcs-dataset-id`).
-3. Add or adjust a method on `Resources` / `Client`.
-4. Prefer soft fallbacks (`_try_paginated`) when Quicken has renamed paths.
-5. Add a synthetic unit test where logic is non-trivial (especially views).
-6. Update `docs/endpoint-map.md`.
-
-## Development setup
-
-```bash
+```powershell
 python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-pytest
+.\.venv\Scripts\python.exe -m pip install -e ".[browser,dev]"
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## Code style
+Windows is required for the DPAPI-backed store. Tests never require a live account.
+Use a fresh temporary directory if specifying pytest `--basetemp`.
 
-- Python 3.10+
-- `ruff` for lint
-- Public response shapes for views should be Pydantic models in `simplifi.models`
+## Upstream PR workflow
 
-## Disclosure
+```powershell
+git remote -v
+# If upstream is absent:
+git remote add upstream https://github.com/soluwalana/simplifi-api.git
+git fetch upstream
+git switch -c feature/focused-auth-fix upstream/main
+git cherry-pick <relevant-commit-sha>
+git push -u origin feature/focused-auth-fix
+```
 
-This project is independent and not affiliated with Quicken. Endpoint behavior can
-change without notice.
+Open a PR with base `soluwalana/simplifi-api:main` and compare
+`tristanweir/simplifi-api:feature/focused-auth-fix`. Describe the user-visible behavior,
+tests, and compatibility limits. Upstream's original policy is read-only, so do not
+include the opt-in category-write commit in an authentication PR. Coordinate any
+proposed write support with its maintainer separately.
+
+Before pushing, inspect `git diff --cached`, the staged file list, and newly added
+history for credentials, household details, or machine-specific paths. Keep token
+caches and backups out of Git even though they are encrypted.

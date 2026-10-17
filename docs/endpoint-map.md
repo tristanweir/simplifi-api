@@ -23,6 +23,13 @@ Headers on data calls: `Authorization: Bearer …`, `Qcs-Dataset-Id`, `app-clien
 
 ## Core data
 
+The fork also exposes an opt-in `simplifi.category_update.update_category` helper
+for `PUT /transactions/{id}`. It is not enabled on the ordinary read-only HTTP client.
+It requires a fresh unsplit CASH_FLOW original, a specific target category, an
+encrypted backup, a scoped one-shot PUT, and read-back verification. It sends the
+same supported fields as the web app's CASH_FLOW request transform; it does not
+create transaction rules or perform bulk updates. See the README for limitations.
+
 | UI tab | Method | Path | Package |
 |--------|--------|------|---------|
 | (household) | GET | `/datasets` | `Client.datasets` / `resolve_dataset` |
