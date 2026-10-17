@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
+from simplifi.secure_session import SecureSession
 
 from simplifi.constants import APP_BUILD, APP_RELEASE, BASE_URL, CLIENT_ID, DEFAULT_PAGE_LIMIT
 from simplifi.errors import ReadOnlyViolation, SimplifiHTTPError
@@ -29,13 +30,15 @@ class HttpClient:
         session: requests.Session | None = None,
         base_url: str = BASE_URL,
         get_access_token: Any = None,
+        refresh_access_token: Any = None,
         dataset_id: str | None = None,
         client_id: str = CLIENT_ID,
         timeout: float = 60.0,
     ) -> None:
-        self.session = session or requests.Session()
+        self.session = session or SecureSession()
         self.base_url = base_url.rstrip("/") + "/"
         self._get_access_token = get_access_token
+        self._refresh_access_token = refresh_access_token
         self.dataset_id = dataset_id
         self.client_id = client_id
         self.timeout = timeout
@@ -75,7 +78,9 @@ class HttpClient:
             headers["Qcs-Dataset-Id"] = self.dataset_id
             headers["qcs-dataset-id"] = self.dataset_id
 
-        url = urljoin(self.base_url, path.lstrip("/"))
+        url = urljoin(self.base_url, path)
+        if urlsplit(url).scheme != "https" or urlsplit(url).netloc != "services.quicken.com":
+            raise ReadOnlyViolation("Blocked pagination/request outside the Quicken API origin")
         logger.debug("%s %s", method_u, url)
         response = self.session.request(
             method_u,
@@ -84,7 +89,16 @@ class HttpClient:
             params=params,
             json=json,
             timeout=self.timeout,
+            allow_redirects=False,
         )
+        if response.status_code == 401 and self._refresh_access_token:
+            headers["Authorization"] = f"Bearer {self._refresh_access_token()}"
+            response = self.session.request(
+                method_u, url, headers=headers, params=params, json=json,
+                timeout=self.timeout, allow_redirects=False,
+            )
+        if 300 <= response.status_code < 400:
+            raise SimplifiHTTPError(response.status_code, "Quicken API", "Redirect blocked")
         if response.status_code >= 400:
             raise SimplifiHTTPError(response.status_code, url, response.text)
         if response.status_code == 204 or not response.content:
@@ -110,7 +124,11 @@ class HttpClient:
         resources: list[dict[str, Any]] = []
         next_link: str | None = path
         first = True
+        seen = set()
         while next_link:
+            if next_link in seen:
+                raise SimplifiHTTPError(0, "Quicken API", "Pagination loop detected")
+            seen.add(next_link)
             if first:
                 payload = self.get(
                     next_link, params=query, require_dataset=require_dataset

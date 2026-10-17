@@ -102,7 +102,7 @@ def test_login_json_code_path(tmp_path: Path):
     )
     tokens = auth.login("user@example.com", "secret", mfa_prompt=False)
     assert tokens.access_token == "access"
-    saved = json.loads((tmp_path / "tokens.json").read_text(encoding="utf-8"))
+    saved = store.load().model_dump()
     assert saved["refresh_token"] == "refresh"
 
 

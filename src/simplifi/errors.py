@@ -16,9 +16,9 @@ class SimplifiHTTPError(SimplifiError):
 
     def __init__(self, status_code: int, url: str, body: str) -> None:
         self.status_code = status_code
-        self.url = url
-        self.body = body
-        super().__init__(f"Simplifi HTTP {status_code} for {url}: {body[:500]}")
+        self.url = "Quicken API"
+        self.body = "[suppressed]"
+        super().__init__(f"Simplifi HTTP {status_code}; response suppressed")
 
 
 class ReadOnlyViolation(SimplifiError):

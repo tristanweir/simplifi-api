@@ -12,8 +12,8 @@ class SimplifiModel(BaseModel):
 
 
 class TokenSet(SimplifiModel):
-    access_token: str
-    refresh_token: str
+    access_token: str = Field(repr=False)
+    refresh_token: str = Field(repr=False)
     access_token_expires_at: str | None = None
     refresh_token_expires_at: str | None = None
 

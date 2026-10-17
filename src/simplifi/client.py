@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 import requests
+from simplifi.secure_session import SecureSession
 
 from simplifi.auth import AuthSession
 from simplifi.constants import BASE_URL, DEFAULT_PAGE_LIMIT
@@ -30,7 +31,7 @@ class Client:
         base_url: str = BASE_URL,
         threat_metrix_session_id: str | None = None,
     ) -> None:
-        self.session = session or requests.Session()
+        self.session = session or SecureSession()
         self.auth = AuthSession(
             session=self.session,
             token_store=token_store,
@@ -42,6 +43,7 @@ class Client:
             session=self.session,
             base_url=base_url,
             get_access_token=self.auth.ensure_access_token,
+            refresh_access_token=self.auth.refresh_access_token,
             dataset_id=dataset_id or os.environ.get("SIMPLIFI_DATASET_ID"),
         )
         self.resources = Resources(self.http)
@@ -79,6 +81,8 @@ class Client:
         datasets = self.resources.datasets()
         if not datasets:
             raise RuntimeError("No Simplifi datasets returned for this account")
+        if len(datasets) != 1:
+            raise RuntimeError("Multiple datasets; specify dataset_id explicitly")
         dataset_id = str(datasets[0]["id"])
         self.http.set_dataset_id(dataset_id)
         logger.info("Using dataset_id=%s", dataset_id)

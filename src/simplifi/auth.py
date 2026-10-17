@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -21,6 +22,8 @@ from simplifi.constants import (
 )
 from simplifi.errors import AuthError
 from simplifi.models import TokenSet
+from simplifi.public_client import public_client_secret
+from simplifi.secure_session import SecureSession
 from simplifi.token_store import TokenStore
 
 logger = logging.getLogger("simplifi.auth")
@@ -35,7 +38,8 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
     text = value.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
     except ValueError:
         return None
 
@@ -54,7 +58,7 @@ class AuthSession:
         redirect_uri: str = REDIRECT_URI,
         threat_metrix_session_id: str | None = None,
     ) -> None:
-        self.session = session or requests.Session()
+        self.session = session or SecureSession()
         self.token_store = token_store or TokenStore()
         self.base_url = base_url.rstrip("/")
         self.client_id = client_id
@@ -62,19 +66,55 @@ class AuthSession:
         self.redirect_uri = redirect_uri
         self.threat_metrix_session_id = threat_metrix_session_id
         self._tokens: TokenSet | None = self.token_store.load()
+        self._session_state: str | None = None
 
     @property
     def tokens(self) -> TokenSet | None:
         return self._tokens
 
+    def adopt_tokens(self, tokens: TokenSet) -> None:
+        """Use tokens in memory; caller must verify them before persisting."""
+        self._tokens = tokens
+
     def _auth_headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "content-type": "application/json;charset=UTF-8",
             "accept": "application/json, text/plain, */*",
             "app-client-id": self.client_id,
             "app-release": APP_RELEASE,
             "app-build": APP_BUILD,
         }
+        if self._session_state:
+            headers["qcs-session-state"] = self._session_state
+            headers["qcs-session-state-provided"] = "true"
+        return headers
+
+    @staticmethod
+    def _failure(stage: str, response: requests.Response) -> AuthError:
+        # Only accept documented-shape codes, never server messages or arbitrary values.
+        codes = set()
+        try:
+            payload = response.json()
+            candidates = [payload.get("code")]
+            errors = payload.get("errors")
+            if isinstance(errors, list):
+                candidates.extend(item.get("code") for item in errors if isinstance(item, dict))
+            codes = {
+                value
+                for value in candidates
+                if isinstance(value, str) and re.fullmatch(r"QCS-[0-9]{4}(?:-[0-9]{1,3})?", value)
+            }
+        except (ValueError, AttributeError, TypeError):
+            pass
+        suffix = f"; code={','.join(sorted(codes))}" if codes else ""
+        return AuthError(
+            f"{stage} failed (HTTP {response.status_code}{suffix}); response suppressed"
+        )
+
+    def _check_session_state(self, response: requests.Response) -> None:
+        echoed = response.headers.get("qcs-session-state")
+        if echoed is not None and echoed != self._session_state:
+            raise AuthError("Authorize failed: session-state mismatch; response suppressed")
 
     def ensure_access_token(self) -> str:
         tokens = self._tokens or self.token_store.load()
@@ -91,14 +131,12 @@ class AuthSession:
             except AuthError as exc:
                 logger.warning("Token refresh failed: %s", exc)
 
-        raise AuthError(
-            "No valid access token. Run `simplifi login` or call Client.login() first."
-        )
+        raise AuthError("No valid access token. Run `simplifi login` or call Client.login() first.")
 
     def _access_expired(self, tokens: TokenSet) -> bool:
         expires = _parse_iso(tokens.access_token_expires_at)
         if expires is None:
-            return False
+            return True
         return expires <= _utc_now() + timedelta(seconds=ACCESS_TOKEN_SKEW_SECONDS)
 
     def login(
@@ -110,6 +148,7 @@ class AuthSession:
         mfa_prompt: bool = True,
     ) -> TokenSet:
         threat_id = self.threat_metrix_session_id or str(uuid.uuid4())
+        self._session_state = str(uuid.uuid4())
         body: dict[str, Any] = {
             "clientId": self.client_id,
             "username": email,
@@ -131,22 +170,30 @@ class AuthSession:
         )
 
         if response.status_code == 202:
+            self._check_session_state(response)
             payload = response.json()
             channel = payload.get("mfaChannel") or "EMAIL"
             mfa_id = payload.get("mfaId")
             code = mfa_code
             if code is None and mfa_prompt:
                 print(f"MFA required via {channel}. Check your email/phone.")
-                code = input("MFA Code: ").strip()
+                import getpass
+
+                code = getpass.getpass("MFA Code (hidden): ").strip()
             if not code:
                 raise AuthError("MFA code required but not provided")
             body["mfaChannel"] = channel
             body["mfaCode"] = code
             body["mfaId"] = mfa_id
+            request_id = payload.get("threatMetrixRequestId")
+            body["threatMetrixRequestId"] = request_id
+            mfa_headers = {**self._auth_headers(), "tm-session-id": threat_id}
+            if isinstance(request_id, str) and request_id:
+                mfa_headers["tm-request-id"] = request_id
             response = self.session.post(
                 f"{self.base_url}/oauth/authorize",
                 json=body,
-                headers={**self._auth_headers(), "tm-session-id": threat_id},
+                headers=mfa_headers,
                 allow_redirects=False,
                 timeout=60,
             )
@@ -158,11 +205,14 @@ class AuthSession:
         return tokens
 
     def _extract_auth_code(self, response: requests.Response) -> str:
+        if response.status_code >= 400:
+            raise self._failure("Authorize", response)
+        self._check_session_state(response)
         location = response.headers.get("Location") or response.headers.get("location")
         if location:
             parsed = urlparse(location)
             qs = parse_qs(parsed.query)
-            if "code" in qs and qs["code"]:
+            if qs.get("code"):
                 return qs["code"][0]
 
         # Older/alternate responses return JSON with code/status.
@@ -170,21 +220,20 @@ class AuthSession:
             payload = response.json()
         except ValueError as exc:
             raise AuthError(
-                f"Authorize failed status={response.status_code} body={response.text[:500]}"
+                f"Authorize failed (HTTP {response.status_code}); response suppressed"
             ) from exc
 
         status = payload.get("status")
-        if status and status not in {"User passed MFA", "success", None}:
-            if "MFA" in str(status):
-                raise AuthError(f"Authorize MFA incomplete: {payload}")
+        if status and status not in {"User passed MFA", "success", None} and "MFA" in str(status):
+            raise AuthError("Authorize MFA incomplete; response suppressed")
         code = payload.get("code")
         if code:
             return str(code)
-        raise AuthError(
-            f"Authorize did not return a code (status={response.status_code}): {payload}"
-        )
+        raise AuthError(f"Authorize did not return a code (HTTP {response.status_code})")
 
     def exchange_code(self, code: str) -> TokenSet:
+        if not self.client_secret:
+            self.client_secret = public_client_secret()
         response = self.session.post(
             f"{self.base_url}/oauth/token",
             json={
@@ -198,12 +247,12 @@ class AuthSession:
             timeout=60,
         )
         if response.status_code != 200:
-            raise AuthError(
-                f"Token exchange failed status={response.status_code} body={response.text[:500]}"
-            )
+            raise self._failure("Token exchange", response)
         return self._parse_token_payload(response.json())
 
     def refresh(self, refresh_token: str) -> TokenSet:
+        if not self.client_secret:
+            self.client_secret = public_client_secret()
         response = self.session.post(
             f"{self.base_url}/oauth/token",
             json={
@@ -218,10 +267,16 @@ class AuthSession:
             timeout=60,
         )
         if response.status_code != 200:
-            raise AuthError(
-                f"Token refresh failed status={response.status_code} body={response.text[:500]}"
-            )
+            raise self._failure("Token refresh", response)
         return self._parse_token_payload(response.json())
+
+    def refresh_access_token(self) -> str:
+        if not self._tokens or not self._tokens.refresh_token:
+            raise AuthError("Sign in locally again; no refresh token is available")
+        tokens = self.refresh(self._tokens.refresh_token)
+        self.token_store.save(tokens)
+        self._tokens = tokens
+        return tokens.access_token
 
     def use_access_token(self, access_token: str, *, refresh_token: str = "") -> TokenSet:
         tokens = TokenSet(
@@ -241,10 +296,15 @@ class AuthSession:
             headers={**self._auth_headers(), "Authorization": f"Bearer {token}"},
             timeout=60,
         )
-        if response.status_code != 200:
-            raise AuthError(
-                f"Token verification failed status={response.status_code} body={response.text[:500]}"
+        if response.status_code == 401 and access_token is None:
+            token = self.refresh_access_token()
+            response = self.session.get(
+                f"{self.base_url}/userprofiles/me",
+                headers={**self._auth_headers(), "Authorization": f"Bearer {token}"},
+                timeout=60,
             )
+        if response.status_code != 200:
+            raise self._failure("Token verification", response)
         return response.json()
 
     def logout(self) -> None:
@@ -255,17 +315,13 @@ class AuthSession:
         access = payload.get("accessToken") or payload.get("access_token")
         refresh = payload.get("refreshToken") or payload.get("refresh_token")
         if not access or not refresh:
-            raise AuthError(f"Token response missing access/refresh: {payload.keys()}")
+            raise AuthError("Token response missing required fields; response suppressed")
         access_exp = payload.get("accessTokenExpired") or payload.get("access_token_expires_at")
         if not access_exp and isinstance(payload.get("expires_in"), (int, float)):
-            access_exp = (
-                _utc_now() + timedelta(seconds=float(payload["expires_in"]))
-            ).isoformat()
+            access_exp = (_utc_now() + timedelta(seconds=float(payload["expires_in"]))).isoformat()
         if not access_exp:
             access_exp = (_utc_now() + timedelta(minutes=55)).isoformat()
-        refresh_exp = payload.get("refreshTokenExpired") or payload.get(
-            "refresh_token_expires_at"
-        )
+        refresh_exp = payload.get("refreshTokenExpired") or payload.get("refresh_token_expires_at")
         return TokenSet(
             access_token=str(access),
             refresh_token=str(refresh),

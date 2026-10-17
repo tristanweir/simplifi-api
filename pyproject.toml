@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "quicken-simplifi-api"
 version = "0.1.0"
-description = "Unofficial read-only Python API for Quicken Simplifi (Personal)"
+description = "Unofficial Simplifi client with browser login and scoped category updates"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -33,11 +33,11 @@ dev = [
 ]
 
 [project.scripts]
-simplifi = "simplifi.cli:main"
+simplifi = "simplifi.local_cli:main"
 
 [project.urls]
-Homepage = "https://github.com/soluwalana/simplifi-api"
-Issues = "https://github.com/soluwalana/simplifi-api/issues"
+Homepage = "https://github.com/tristanweir/simplifi-api"
+Issues = "https://github.com/tristanweir/simplifi-api/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/simplifi"]

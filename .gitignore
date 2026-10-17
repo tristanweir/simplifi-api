@@ -31,3 +31,11 @@ exports/
 .DS_Store
 .idea/
 .vscode/
+
+# Local auth and financial data
+.local/
+*.dpapi
+read-check.json
+.test-tmp*/
+*.original.json
+*.backup.json
