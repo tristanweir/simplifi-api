@@ -119,9 +119,7 @@ def spending_by_category(
         categories.append(
             CategoryTotal(
                 category_id=cid,
-                category_name=names.get(cid or "", "(uncategorized)")
-                if cid
-                else "(uncategorized)",
+                category_name=names.get(cid or "", "(uncategorized)") if cid else "(uncategorized)",
                 total=total,
                 transaction_count=len(rows),
                 transaction_ids=[str(t.get("id")) for t in rows if t.get("id")],
@@ -156,14 +154,8 @@ def monthly_burn(
 
     for month in months:
         m_start, m_end = _month_bounds(month)
-        out_txns = [
-            t
-            for t in spending
-            if (d := transaction_date(t)) and m_start <= d <= m_end
-        ]
-        in_txns = [
-            t for t in income if (d := transaction_date(t)) and m_start <= d <= m_end
-        ]
+        out_txns = [t for t in spending if (d := transaction_date(t)) and m_start <= d <= m_end]
+        in_txns = [t for t in income if (d := transaction_date(t)) and m_start <= d <= m_end]
         money_out = sum(transaction_amount(t) for t in out_txns)
         money_in = sum(transaction_amount(t) for t in in_txns)
         net = money_in + money_out
@@ -229,9 +221,7 @@ def monthly_summary(
 ) -> MonthlySummary:
     from_date, to_date = _month_bounds(month)
     as_of = as_of or _today()
-    report = income_vs_expense(
-        transactions, from_date=from_date, to_date=to_date, as_of=as_of
-    )
+    report = income_vs_expense(transactions, from_date=from_date, to_date=to_date, as_of=as_of)
     by_cat = spending_by_category(
         transactions,
         from_date=from_date,
@@ -239,9 +229,7 @@ def monthly_summary(
         as_of=as_of,
         category_names=category_names,
     )
-    spending, _, _ = _partition(
-        transactions, from_date=from_date, to_date=to_date, as_of=as_of
-    )
+    spending, _, _ = _partition(transactions, from_date=from_date, to_date=to_date, as_of=as_of)
     payee_totals: dict[str, float] = defaultdict(float)
     payee_counts: dict[str, int] = defaultdict(int)
     for txn in spending:
@@ -308,17 +296,22 @@ def spending_plan_summary(
     bills = 0.0
     subscriptions = 0.0
     sched_income = 0.0
+    recurring_by_id = {}
     for item in month_sched:
         amount = _scheduled_amount(item)
         stype = _scheduled_type(item)
-        if "INCOME" in stype or amount > 0 and "BILL" not in stype and "SUB" not in stype:
-            if amount > 0:
-                sched_income += amount
-                continue
+        if amount > 0 and ("INCOME" in stype or ("BILL" not in stype and "SUB" not in stype)):
+            sched_income += amount
+            continue
         if "SUB" in stype:
             subscriptions += abs(amount)
         else:
             bills += abs(amount)
+        if item.get("id"):
+            key = str(item["id"])
+            bucket = "subscription" if "SUB" in stype else "bill"
+            previous = recurring_by_id.get(key, (bucket, 0.0))[1]
+            recurring_by_id[key] = (bucket, previous + abs(amount))
 
     goals_total = 0.0
     for goal in goals or []:
@@ -328,7 +321,35 @@ def spending_plan_summary(
                 break
 
     income_total = sum(transaction_amount(t) for t in income) or sched_income
-    other_spend = abs(sum(transaction_amount(t) for t in spending))
+    # Scheduled buckets cover bills/subscriptions. Actual linked payments belong
+    # in those buckets too, rather than being subtracted again as other spending.
+    actual_bills = actual_subscriptions = 0.0
+    linked_actuals = defaultdict(float)
+    other_transactions = []
+    for txn in spending:
+        linked = txn.get("stModelId")
+        if linked is not None and str(linked) in recurring_by_id:
+            linked_actuals[str(linked)] += abs(transaction_amount(txn))
+        elif txn.get("isSubscription"):
+            actual_subscriptions += abs(transaction_amount(txn))
+        elif txn.get("isBill"):
+            actual_bills += abs(transaction_amount(txn))
+        else:
+            other_transactions.append(txn)
+    linked_bills = linked_subscriptions = 0.0
+    for key, actual in linked_actuals.items():
+        bucket, planned = recurring_by_id[key]
+        if bucket == "subscription":
+            subscriptions -= planned
+            linked_subscriptions += max(planned, actual)
+        else:
+            bills -= planned
+            linked_bills += max(planned, actual)
+    # Without linkage, the category's planned/actual totals provide an estimate;
+    # do not guess payment identity from merchant names or equal amounts.
+    bills = linked_bills + max(bills, actual_bills)
+    subscriptions = linked_subscriptions + max(subscriptions, actual_subscriptions)
+    other_spend = abs(sum(transaction_amount(t) for t in other_transactions))
     left = income_total - bills - subscriptions - goals_total - other_spend
 
     return SpendingPlanSummary(
@@ -365,9 +386,10 @@ def bills_income_upcoming(
         net += amount
         reminder = UpcomingReminder(
             id=str(item["id"]) if item.get("id") else None,
-            payee=transaction_payee(item) if item.get("payee") or item.get("payeeName") else (
-                str(item.get("name") or item.get("payee") or item.get("payeeName") or "")
-                or None
+            payee=transaction_payee(item)
+            if item.get("payee") or item.get("payeeName")
+            else (
+                str(item.get("name") or item.get("payee") or item.get("payeeName") or "") or None
             ),
             amount=amount,
             due_on=due,
@@ -465,11 +487,7 @@ def dashboard_snapshot(
 
     upcoming = bills_income_upcoming(scheduled, from_date=as_of, to_date=end, as_of=as_of)
     recent_from = (date.fromisoformat(as_of) - timedelta(days=7)).isoformat()
-    recent = [
-        t
-        for t in transactions
-        if (d := transaction_date(t)) and recent_from <= d <= as_of
-    ]
+    recent = [t for t in transactions if (d := transaction_date(t)) and recent_from <= d <= as_of]
 
     return DashboardSnapshot(
         as_of=as_of,
@@ -491,8 +509,12 @@ class Views:
     def __init__(self, client: Any) -> None:
         self._client = client
 
+    def _provided_or_fetch(self, kwargs, name, fetch):
+        value = kwargs.pop(name, None)
+        return fetch() if value is None else value
+
     def spending_by_category(self, **kwargs: Any) -> SpendingByCategoryReport:
-        txns = kwargs.pop("transactions", None) or self._client.transactions()
+        txns = self._provided_or_fetch(kwargs, "transactions", self._client.transactions)
         cats = kwargs.pop("categories", None)
         if "category_names" not in kwargs:
             cats = cats if cats is not None else self._client.categories()
@@ -504,15 +526,15 @@ class Views:
         return spending_by_category(txns, **kwargs)
 
     def monthly_burn(self, **kwargs: Any) -> MonthlyBurnReport:
-        txns = kwargs.pop("transactions", None) or self._client.transactions()
+        txns = self._provided_or_fetch(kwargs, "transactions", self._client.transactions)
         return monthly_burn(txns, **kwargs)
 
     def income_vs_expense(self, **kwargs: Any) -> IncomeExpenseReport:
-        txns = kwargs.pop("transactions", None) or self._client.transactions()
+        txns = self._provided_or_fetch(kwargs, "transactions", self._client.transactions)
         return income_vs_expense(txns, **kwargs)
 
     def monthly_summary(self, **kwargs: Any) -> MonthlySummary:
-        txns = kwargs.pop("transactions", None) or self._client.transactions()
+        txns = self._provided_or_fetch(kwargs, "transactions", self._client.transactions)
         if "category_names" not in kwargs:
             cats = self._client.categories()
             kwargs["category_names"] = {
@@ -523,24 +545,27 @@ class Views:
         return monthly_summary(txns, **kwargs)
 
     def spending_plan_summary(self, month: str, **kwargs: Any) -> SpendingPlanSummary:
-        txns = kwargs.pop("transactions", None) or self._client.transactions()
-        scheduled = kwargs.pop("scheduled", None) or self._client.scheduled_transactions()
+        txns = self._provided_or_fetch(kwargs, "transactions", self._client.transactions)
+        scheduled = self._provided_or_fetch(
+            kwargs, "scheduled", self._client.scheduled_transactions
+        )
         goals = kwargs.pop("goals", None)
         if goals is None:
-            try:
-                goals = self._client.goals()
-            except Exception:
-                goals = []
+            goals = self._client.goals()
         return spending_plan_summary(
             month=month, transactions=txns, scheduled=scheduled, goals=goals, **kwargs
         )
 
     def bills_income_upcoming(self, **kwargs: Any) -> BillsIncomeUpcoming:
-        scheduled = kwargs.pop("scheduled", None) or self._client.scheduled_transactions()
+        scheduled = self._provided_or_fetch(
+            kwargs, "scheduled", self._client.scheduled_transactions
+        )
         return bills_income_upcoming(scheduled, **kwargs)
 
     def cash_flow_projection(self, **kwargs: Any) -> CashFlowProjection:
-        scheduled = kwargs.pop("scheduled", None) or self._client.scheduled_transactions()
+        scheduled = self._provided_or_fetch(
+            kwargs, "scheduled", self._client.scheduled_transactions
+        )
         if "starting_balance" not in kwargs:
             accounts = self._client.accounts()
             kwargs["starting_balance"] = sum(
@@ -551,9 +576,11 @@ class Views:
         return cash_flow_projection(scheduled, **kwargs)
 
     def dashboard_snapshot(self, **kwargs: Any) -> DashboardSnapshot:
-        accounts = kwargs.pop("accounts", None) or self._client.accounts()
-        scheduled = kwargs.pop("scheduled", None) or self._client.scheduled_transactions()
-        transactions = kwargs.pop("transactions", None) or self._client.transactions()
+        accounts = self._provided_or_fetch(kwargs, "accounts", self._client.accounts)
+        scheduled = self._provided_or_fetch(
+            kwargs, "scheduled", self._client.scheduled_transactions
+        )
+        transactions = self._provided_or_fetch(kwargs, "transactions", self._client.transactions)
         return dashboard_snapshot(
             accounts=accounts,
             scheduled=scheduled,

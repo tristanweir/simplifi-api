@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from unittest.mock import Mock
+
+import pytest
+
+from simplifi.errors import AuthError, SimplifiError
 from simplifi.views import (
+    Views,
     bills_income_upcoming,
     cash_flow_projection,
     dashboard_snapshot,
@@ -17,8 +23,7 @@ from tests.fixtures.synthetic import ACCOUNTS, CATEGORIES, GOALS, SCHEDULED, TRA
 def test_classify_excludes_transfers_investments_projections():
     known = {str(t["id"]) for t in TRANSACTIONS}
     kinds = {
-        t["id"]: classify_for_spending(t, as_of="2026-08-29", known_ids=known)
-        for t in TRANSACTIONS
+        t["id"]: classify_for_spending(t, as_of="2026-08-29", known_ids=known) for t in TRANSACTIONS
     }
     assert kinds["t1"] == "spending"
     assert kinds["t3"] == "income"
@@ -140,3 +145,149 @@ def test_dashboard_snapshot():
 
 def test_transaction_amount_cents():
     assert transaction_amount({"amountCents": -4250}) == -42.5
+
+
+@pytest.mark.parametrize("subscription", [False, True])
+def test_paid_recurring_transaction_is_not_other_spending(subscription):
+    flag = "isSubscription" if subscription else "isBill"
+    transactions = [
+        {"id": "income", "amount": 1000, "postedOn": "2026-01-10"},
+        {"id": "paid", "amount": -100, "postedOn": "2026-01-10", flag: True},
+        {"id": "other", "amount": -25, "postedOn": "2026-01-11"},
+    ]
+    scheduled = [
+        {
+            "id": "recurring",
+            "type": "SUBSCRIPTION" if subscription else "BILL",
+            "amount": 100,
+            "dueOn": "2026-01-10",
+        }
+    ]
+    result = spending_plan_summary(
+        month="2026-01",
+        transactions=transactions,
+        scheduled=scheduled,
+        goals=[],
+        as_of="2026-01-15",
+    )
+    assert result.other_spend == 25
+    assert result.bills + result.subscriptions == 100
+    assert result.left_this_month == 875
+
+
+def test_linked_subscription_does_not_enter_bill_bucket():
+    result = spending_plan_summary(
+        month="2026-01",
+        transactions=[
+            {"amount": 1000, "postedOn": "2026-01-10"},
+            {"amount": -100, "postedOn": "2026-01-10", "stModelId": "subscription"},
+        ],
+        scheduled=[
+            {"id": "subscription", "type": "SUBSCRIPTION", "amount": 100, "dueOn": "2026-01-10"}
+        ],
+        goals=[],
+        as_of="2026-01-15",
+    )
+    assert result.bills == 0 and result.subscriptions == 100
+    assert result.other_spend == 0 and result.left_this_month == 900
+
+
+def test_actual_bill_is_counted_when_schedule_is_missing():
+    result = spending_plan_summary(
+        month="2026-01",
+        transactions=[
+            {"amount": 1000, "postedOn": "2026-01-10"},
+            {"amount": -100, "postedOn": "2026-01-10", "isBill": True},
+        ],
+        scheduled=[],
+        goals=[],
+        as_of="2026-01-15",
+    )
+    assert result.bills == 100 and result.other_spend == 0
+    assert result.left_this_month == 900
+
+
+def test_over_budget_paid_bill_does_not_hide_another_unpaid_bill():
+    result = spending_plan_summary(
+        month="2026-01",
+        transactions=[
+            {"amount": 1000, "postedOn": "2026-01-10"},
+            {"amount": -150, "postedOn": "2026-01-10", "stModelId": "paid"},
+        ],
+        scheduled=[
+            {"id": "paid", "type": "BILL", "amount": 100, "dueOn": "2026-01-10"},
+            {"id": "unpaid", "type": "BILL", "amount": 200, "dueOn": "2026-01-25"},
+        ],
+        goals=[],
+        as_of="2026-01-15",
+    )
+    assert result.bills == 350
+    assert result.other_spend == 0 and result.left_this_month == 650
+
+
+@pytest.mark.parametrize(
+    "method,kwargs",
+    [
+        (
+            "spending_by_category",
+            {
+                "transactions": [],
+                "categories": [],
+                "from_date": "2026-01-01",
+                "to_date": "2026-01-31",
+            },
+        ),
+        ("monthly_burn", {"transactions": [], "from_date": "2026-01-01", "to_date": "2026-01-31"}),
+        (
+            "income_vs_expense",
+            {"transactions": [], "from_date": "2026-01-01", "to_date": "2026-01-31"},
+        ),
+        ("monthly_summary", {"transactions": [], "category_names": {}, "month": "2026-01"}),
+        (
+            "spending_plan_summary",
+            {"transactions": [], "scheduled": [], "goals": [], "month": "2026-01"},
+        ),
+        (
+            "bills_income_upcoming",
+            {"scheduled": [], "from_date": "2026-01-01", "to_date": "2026-01-31"},
+        ),
+        (
+            "cash_flow_projection",
+            {
+                "scheduled": [],
+                "starting_balance": 0,
+                "from_date": "2026-01-01",
+                "to_date": "2026-01-31",
+            },
+        ),
+        ("dashboard_snapshot", {"accounts": [], "scheduled": [], "transactions": []}),
+    ],
+)
+def test_explicit_empty_inputs_never_fetch(method, kwargs):
+    client = Mock()
+    if method != "cash_flow_projection":
+        kwargs = {**kwargs, "as_of": "2026-01-15"}
+    getattr(Views(client), method)(**kwargs)
+    assert not client.mock_calls
+
+
+def test_omitted_transactions_still_fetch():
+    client = Mock()
+    client.transactions.return_value = []
+    Views(client).monthly_burn(from_date="2026-01-01", to_date="2026-01-31")
+    client.transactions.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AuthError("synthetic auth failure"),
+        SimplifiError("synthetic network failure"),
+        RuntimeError("synthetic bug"),
+    ],
+)
+def test_goal_failures_propagate(error):
+    client = Mock()
+    client.goals.side_effect = error
+    with pytest.raises(type(error)):
+        Views(client).spending_plan_summary("2026-01", transactions=[], scheduled=[])
