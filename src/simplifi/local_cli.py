@@ -52,7 +52,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Local Simplifi client with Windows encrypted auth"
     )
-    parser.add_argument("command", choices=["login", "check", "export", "logout"])
+    parser.add_argument("command", choices=["login", "browser-login", "check", "export", "logout"])
+    parser.add_argument("--browser", choices=["chrome", "msedge"], default="chrome")
     parser.add_argument("--dataset-id")
     parser.add_argument(
         "--resource",
@@ -63,6 +64,11 @@ def main():
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
+        if args.command == "browser-login":
+            from simplifi.browser_login import browser_login
+
+            browser_login(channel=args.browser, dataset_id=args.dataset_id)
+            return
         if args.command == "logout":
             TokenStore().clear()
             print("Local tokens cleared. The server session is not revoked by this command.")
