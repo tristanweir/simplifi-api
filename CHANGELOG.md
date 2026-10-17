@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix spending-plan double counting of recurring expenses; reconcile linked payments
+  per schedule and keep unrelated outstanding items in the budget.
+- Preserve explicitly supplied empty datasets in bound views and propagate goal-read failures.
+- Introduce typed version-1 rule plans/journal states and extract journal persistence,
+  retaining existing digests, encrypted backups, validation, and fail-closed recovery.
+
 - Add reusable future-only transaction-rule update/delete change plans and CLI review.
 - Add encrypted original backups and append-only execution checkpoints with OS locking.
 - Reconcile interrupted writes through server reads; never automatically replay an

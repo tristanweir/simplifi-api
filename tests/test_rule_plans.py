@@ -6,8 +6,11 @@ from unittest.mock import Mock
 import pytest
 import responses
 
+from simplifi import journal_store
 from simplifi import rule_plans as plans
 from simplifi.errors import ReadOnlyViolation, SimplifiError
+from simplifi.journal_store import JournalStore
+from simplifi.rule_plan_models import ChangePlan, JournalState, OperationState
 from simplifi.transaction_rules import RuleRequestSession, digest, load_encrypted, save_encrypted
 
 
@@ -177,27 +180,27 @@ def test_readback_conflict_stays_dispatched_and_blocks_next_step(service, tmp_pa
 
 def test_crash_after_backup_before_dispatch_can_resume(service, tmp_path, monkeypatch):
     prepared = prepare(service, tmp_path)
-    checkpoint = plans._checkpoint
-    monkeypatch.setattr(plans, "_checkpoint", Mock(side_effect=OSError("disk full")))
+    checkpoint = JournalStore.checkpoint
+    monkeypatch.setattr(JournalStore, "checkpoint", Mock(side_effect=OSError("disk full")))
     with pytest.raises(OSError):
         execute(service, prepared)
     assert not service.writes
     assert (prepared[2] / "backup-00000000.dpapi").exists()
     assert plans.change_plan_status(prepared[2])["states"] == ["pending", "pending"]
-    monkeypatch.setattr(plans, "_checkpoint", checkpoint)
+    monkeypatch.setattr(JournalStore, "checkpoint", checkpoint)
     assert execute(service, prepared)["complete"]
 
 
 def test_backup_failure_prevents_dispatch(service, tmp_path, monkeypatch):
     prepared = prepare(service, tmp_path)
-    original_save = plans.save_encrypted
+    original_save = journal_store.save_encrypted
 
     def fail_backup(path, value):
         if path.name.startswith("backup-"):
             raise OSError("disk full")
         original_save(path, value)
 
-    monkeypatch.setattr(plans, "save_encrypted", fail_backup)
+    monkeypatch.setattr(journal_store, "save_encrypted", fail_backup)
     with pytest.raises(OSError):
         execute(service, prepared)
     assert not service.writes
@@ -224,7 +227,7 @@ def test_truncated_checkpoint_blocks_resume(service, tmp_path):
 
 def test_journal_lock_blocks_concurrent_executor(service, tmp_path):
     prepared = prepare(service, tmp_path)
-    with plans._lock(prepared[2]), pytest.raises(SimplifiError, match="lock"):
+    with JournalStore(prepared[2]).locked(), pytest.raises(SimplifiError, match="lock"):
         execute(service, prepared)
     assert not service.writes
 
@@ -384,3 +387,178 @@ def test_cli_plan_and_execute_share_workflow(service, tmp_path, monkeypatch, cap
     rules_cli.main()
     assert json.loads(capsys.readouterr().out)["complete"]
     assert service.writes == [("DELETE", "two")]
+
+
+def legacy_plan():
+    # Exact pre-refactor v1 shape, including unknown remote metadata and nulls.
+    original = {**rule("one"), "remoteOnly": {"nested": None, "values": [1, 1.5, False]}}
+    payload = {k: v for k, v in original.items() if k not in {"dbVersion", "remoteOnly"}}
+    payload.update(memoTarget="private revised", applyToExistingTransactions=False)
+    return {
+        "version": 1,
+        "kind": "rule-change-plan",
+        "dataset_id": "dataset",
+        "baseline": {"one": original},
+        "operations": [
+            {
+                "action": "update",
+                "rule_id": "one",
+                "original": original,
+                "payload": payload,
+                "preview": {"transactions": [], "resultTxnsCount": 0, "srcTxnsCount": 10},
+            }
+        ],
+    }
+
+
+def test_v1_plan_roundtrip_preserves_confirmation_digest():
+    wire = legacy_plan()
+    typed = ChangePlan.from_wire(wire)
+    assert typed.to_wire() == wire
+    assert digest(typed.to_wire()) == digest(wire)
+
+
+def test_v1_encrypted_plan_and_dispatched_journal_resume(service, tmp_path):
+    wire = legacy_plan()
+    service.remote.clear()
+    service.remote["one"] = {**copy.deepcopy(wire["operations"][0]["payload"]), "dbVersion": 2}
+    path = tmp_path / "legacy.dpapi"
+    save_encrypted(path, wire)
+    directory = tmp_path / "legacy-run"
+    initial = {
+        "version": 1,
+        "sequence": 0,
+        "previous": None,
+        "plan_digest": digest(wire),
+        "steps": [{"status": "pending", "result": None}],
+    }
+    dispatched = {
+        **initial,
+        "sequence": 1,
+        "previous": digest(initial),
+        "steps": [{"status": "dispatched", "result": None}],
+    }
+    save_encrypted(directory / "checkpoint-00000000.dpapi", initial)
+    save_encrypted(directory / "checkpoint-00000001.dpapi", dispatched)
+    save_encrypted(
+        directory / "backup-00000000.dpapi",
+        {"plan_digest": digest(wire), "operation": wire["operations"][0]},
+    )
+    summary = plans.inspect_change_plan(path)
+    assert summary["confirmation"] == digest(wire)
+    assert plans.execute_change_plan(
+        service.client, path, confirmation=digest(wire), journal_dir=directory
+    )["complete"]
+    assert not service.writes
+
+
+@pytest.mark.parametrize("bad_value", [True, 1, "false", None])
+def test_typed_plan_rejects_nonfalse_history_flag(bad_value):
+    wire = legacy_plan()
+    wire["operations"][0]["payload"]["applyToExistingTransactions"] = bad_value
+    with pytest.raises(ReadOnlyViolation):
+        ChangePlan.from_wire(wire)
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [],
+        [{"status": "unknown", "result": None}],
+        [{"status": "pending", "result": {"id": "one"}}],
+        [{"status": "pending", "result": None}, {"status": "verified", "result": None}],
+        [{"status": "dispatched", "result": None}, {"status": "dispatched", "result": None}],
+    ],
+)
+def test_invalid_typed_journal_is_rejected(steps):
+    with pytest.raises(SimplifiError):
+        JournalState.from_wire(
+            {"version": 1, "sequence": 0, "previous": None, "plan_digest": "a" * 64, "steps": steps}
+        )
+
+
+def test_reconciliation_is_pure_when_unrelated_rule_conflicts():
+    plan = ChangePlan.from_wire(legacy_plan())
+    state = JournalState.from_wire(
+        {
+            "version": 1,
+            "sequence": 1,
+            "previous": "b" * 64,
+            "plan_digest": digest(plan.to_wire()),
+            "steps": [{"status": "dispatched", "result": None}],
+        }
+    )
+    before = state.to_wire()
+    current = {"one": plan.operations[0].payload, "unexpected": rule("unexpected")}
+    with pytest.raises(SimplifiError, match="outside this plan"):
+        plans.reconcile_state(plan, state, current)
+    assert state.to_wire() == before
+
+
+def test_cannot_skip_dispatch_state():
+    state = JournalState.from_wire(
+        {
+            "version": 1,
+            "sequence": 0,
+            "previous": None,
+            "plan_digest": "a" * 64,
+            "steps": [{"status": "pending", "result": None}],
+        }
+    )
+    with pytest.raises(SimplifiError, match="transition"):
+        state.replace_step(0, OperationState.VERIFIED, {"id": "one"})
+
+
+def test_journal_storage_can_be_injected_without_dpapi(tmp_path):
+    import fnmatch
+
+    class MemoryStorage:
+        def __init__(self):
+            self.data = {}
+
+        def read(self, path):
+            return copy.deepcopy(self.data[path])
+
+        def write(self, path, value):
+            assert path not in self.data
+            self.data[path] = copy.deepcopy(value)
+
+        def exists(self, path):
+            return path in self.data
+
+        def files(self, directory, pattern):
+            return sorted(
+                path
+                for path in self.data
+                if path.parent == directory and fnmatch.fnmatch(path.name, pattern)
+            )
+
+    wire = legacy_plan()
+    plan = ChangePlan.from_wire(wire)
+    store = JournalStore(tmp_path / "journal", storage=MemoryStorage())
+    state = store.start(plan, digest(wire))
+    store.save_backup(0, plan.operations[0], digest(wire))
+    state = store.checkpoint(state.replace_step(0, OperationState.DISPATCHED))
+    assert store.status()["states"] == ["dispatched"]
+    state = store.checkpoint(
+        state.replace_step(0, OperationState.VERIFIED, plan.operations[0].payload)
+    )
+    assert store.status()["complete"]
+    assert store.start(plan, digest(wire)) == state
+
+
+def test_malformed_changes_rejected_before_preview(service, tmp_path):
+    with pytest.raises(ReadOnlyViolation):
+        prepare(
+            service,
+            tmp_path,
+            [
+                {
+                    "action": "update",
+                    "rule_id": "one",
+                    "changes": {"payeeSourceCondition": "private bad input"},
+                }
+            ],
+        )
+    service.preview_mock.assert_not_called()
+    assert not service.writes

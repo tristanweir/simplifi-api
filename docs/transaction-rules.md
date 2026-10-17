@@ -63,6 +63,19 @@ both updates and deletions; `delete` accepts only a single-deletion plan.
 
 ## Safe resume and verification
 
+Internally, strict Pydantic `ChangePlan`, update/delete operation models and typed
+journal states validate the workflow. The `JournalStore` owns locking, encrypted
+backups and durable checkpoints; rule reconciliation is a pure state transition.
+The version-1 JSON shape is preserved, including unknown server fields in raw rule
+records, so existing encrypted batch plans retain their confirmation digests and
+existing journals can resume. Invalid states, skipped transitions and malformed
+commands fail before dispatch. Historical single-update plans remain a separate API.
+
+Tests may inject a `JournalStore` with a `JsonStorage` implementation through
+`execute_change_plan(..., journal_store=...)`; production defaults continue to use
+DPAPI, exclusive writes and the selected journal's OS lock. Custom storage is a
+trusted library extension and must preserve its durability/confidentiality contract.
+
 Run the **same execute command, plan, confirmation, and journal directory** to resume.
 The executor holds a local OS file lock and appends encrypted checkpoints with
 exclusive creation and flushed writes. Each operation has these states:

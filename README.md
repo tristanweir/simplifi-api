@@ -133,6 +133,13 @@ field names, CLI commands, preview coverage, and backfill limitations.
 
 ## Tests and contributing upstream
 
+Bound analytics views fetch inputs only when omitted or `None`; an explicit empty
+list means an empty dataset. Goal read failures propagate rather than silently
+reporting zero contributions. Spending-plan summaries keep recurring payments out
+of other spending and reconcile known `stModelId` links per scheduled item. Where
+link metadata is absent, flagged bills/subscriptions use aggregate planned-versus-
+actual budget estimates; no merchant-name or equal-amount matching is inferred.
+
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 git remote add upstream https://github.com/soluwalana/simplifi-api.git
