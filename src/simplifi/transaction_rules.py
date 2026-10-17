@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import math
+import os
 import re
 from pathlib import Path
 
@@ -68,6 +69,8 @@ def save_encrypted(path: Path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as stream:
         stream.write(encrypted)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def load_encrypted(path: Path):
@@ -149,15 +152,16 @@ def rule_payload(original, changes=None, *, apply_to_existing=False):
 
 
 class RuleRequestSession(SecureSession):
-    """One request, bound to one exact preview or approved update payload."""
+    """One request, bound to one exact preview, approved update, or deletion."""
 
     def __init__(self, method, path, payload):
         super().__init__()
         if not (
             method == "POST"
             and path == PREVIEW_PATH
-            or method == "PUT"
+            or method in {"PUT", "DELETE"}
             and re.fullmatch(r"/transaction-rules/[A-Za-z0-9_-]+", path)
+            and (method != "DELETE" or payload is None)
         ):
             raise ReadOnlyViolation("Unsupported rule operation")
         self.method, self.url, self.payload, self.used = (
@@ -183,10 +187,12 @@ class RuleRequestSession(SecureSession):
             response = requests.Session.request(self, method, url, **kwargs)
         except requests.RequestException:
             raise SimplifiError(
-                "Rule request failed; for an update, read the rule before retrying"
+                "Rule request failed; read the rule before retrying a mutation"
             ) from None
         if not 200 <= response.status_code < 300:
             raise SimplifiHTTPError(response.status_code, "rule operation", "Response suppressed")
+        if method == "DELETE":
+            return None  # Some successful DELETE responses contain non-JSON bodies.
         try:
             return response.json() if response.content else None
         except ValueError:
@@ -205,7 +211,8 @@ def _request(client, method, path, payload):
         "accept": "application/json",
     }
     with RuleRequestSession(method, path, payload) as session:
-        return session.request(method, session.url, json=payload, headers=headers)
+        body = {} if method == "DELETE" else {"json": payload}
+        return session.request(method, session.url, headers=headers, **body)
 
 
 def preview_rule(client, rule, changes=None, *, apply_to_existing=False):

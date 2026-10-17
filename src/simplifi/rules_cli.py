@@ -1,4 +1,4 @@
-"""Explicit rule listing, encrypted preview planning, and approved single updates."""
+"""Rule reads, encrypted change planning, and explicitly approved resumable execution."""
 
 import argparse
 import json
@@ -6,7 +6,20 @@ from pathlib import Path
 
 from simplifi.client import Client
 from simplifi.errors import SimplifiError
-from simplifi.transaction_rules import apply_rule_update, prepare_rule_update, save_encrypted
+from simplifi.rule_plans import (
+    apply_rule_deletion,
+    change_plan_status,
+    execute_change_plan,
+    inspect_change_plan,
+    prepare_change_plan,
+    prepare_rule_deletion,
+)
+from simplifi.transaction_rules import (
+    apply_rule_update,
+    load_encrypted,
+    prepare_rule_update,
+    save_encrypted,
+)
 
 
 def main():
@@ -15,6 +28,22 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list")
     listing.add_argument("--encrypted-output", type=Path)
+    inspect = commands.add_parser("inspect")
+    inspect.add_argument("--rule-id", required=True)
+    plan = commands.add_parser("plan", help="Prepare an encrypted, future-only change plan")
+    selection = plan.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--operations", type=Path, help="JSON list or encrypted .dpapi list")
+    selection.add_argument("--delete-rule-id", help="Prepare a single deletion")
+    plan.add_argument("--plan", type=Path, required=True)
+    review = commands.add_parser("review", help="Review an encrypted plan without logging in")
+    review.add_argument("--plan", type=Path, required=True)
+    for name in ("execute", "delete"):
+        execute = commands.add_parser(name, help="Execute or safely resume a reviewed plan")
+        execute.add_argument("--plan", type=Path, required=True)
+        execute.add_argument("--confirm", required=True)
+        execute.add_argument("--journal", type=Path, required=True)
+    status = commands.add_parser("status", help="Read local encrypted execution status")
+    status.add_argument("--journal", type=Path, required=True)
     preview = commands.add_parser("preview")
     preview.add_argument("--rule-id", required=True)
     preview.add_argument(
@@ -37,10 +66,39 @@ def main():
     )
     args = parser.parse_args()
     try:
+        if args.command in {"review", "status"}:
+            result = (
+                inspect_change_plan(args.plan)
+                if args.command == "review"
+                else change_plan_status(args.journal)
+            )
+            print(json.dumps(result, indent=2))
+            return
         client = Client(dataset_id=args.dataset_id)
         if not client.dataset_id:
             client.resolve_dataset()
-        if args.command == "list":
+        if args.command == "inspect":
+            print(json.dumps(client.transaction_rule(args.rule_id), indent=2))
+        elif args.command == "plan":
+            if args.delete_rule_id:
+                result = prepare_rule_deletion(client, args.delete_rule_id, plan_path=args.plan)
+            else:
+                operations = (
+                    load_encrypted(args.operations)
+                    if args.operations.suffix == ".dpapi"
+                    else json.loads(args.operations.read_text(encoding="utf-8"))
+                )
+                result = prepare_change_plan(client, operations, plan_path=args.plan)
+            print(json.dumps(result, indent=2))
+        elif args.command in {"execute", "delete"}:
+            apply = apply_rule_deletion if args.command == "delete" else execute_change_plan
+            print(
+                json.dumps(
+                    apply(client, args.plan, confirmation=args.confirm, journal_dir=args.journal),
+                    indent=2,
+                )
+            )
+        elif args.command == "list":
             rules = client.transaction_rules()
             if args.encrypted_output:
                 save_encrypted(

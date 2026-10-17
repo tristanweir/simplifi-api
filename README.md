@@ -123,9 +123,12 @@ original category; never replay a stale whole-record backup.
 
 `Client.transaction_rules()` and `Client.transaction_rule(id)` read transaction
 rules. The opt-in `simplifi.transaction_rules` module adds dry-run previews,
-encrypted plans/backups, explicit confirmation, and scoped single-rule updates.
-Future-only application is the default; historical application requires a separate
-explicit flag. See [transaction-rule workflow](docs/transaction-rules.md) for API
+encrypted plans/backups, explicit confirmation, and scoped rule updates/deletions.
+`simplifi.rule_plans` adds reusable future-only batches, encrypted execution journals,
+read-back verification, and safe resume without replaying uncertain writes. CLI
+commands include `inspect`, `plan`, `review`, `execute`, `delete`, and `status`.
+The older single-update workflow retains separately authorized historical application.
+See [transaction-rule workflow](docs/transaction-rules.md) for API
 field names, CLI commands, preview coverage, and backfill limitations.
 
 ## Tests and contributing upstream

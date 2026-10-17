@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add reusable future-only transaction-rule update/delete change plans and CLI review.
+- Add encrypted original backups and append-only execution checkpoints with OS locking.
+- Reconcile interrupted writes through server reads; never automatically replay an
+  uncertain mutation. Check stale rules/previews and verify completed operations.
+- Keep legacy single-update commands compatible, including explicit historical application.
+
 ## 0.1.0
 
 - Initial read-only Personal Simplifi client (`quicken-simplifi-api`).
