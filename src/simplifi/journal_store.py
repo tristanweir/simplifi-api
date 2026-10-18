@@ -6,6 +6,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
 from simplifi.errors import ReadOnlyViolation, SimplifiError
 from simplifi.rule_plan_models import ChangePlan, JournalState, OperationState
@@ -24,7 +25,21 @@ class EncryptedJsonStorage:
         return load_encrypted(path)
 
     def write(self, path, value):
-        save_encrypted(path, value)
+        # Checkpoints become visible only after a complete encrypted write.
+        # Publishing retains create-only semantics (Windows rename never overwrites).
+        path = Path(path)
+        if not path.name.startswith("checkpoint-"):
+            save_encrypted(path, value)
+            return
+        temporary = path.with_name(f".{uuid4().hex}.dpapi")
+        try:
+            save_encrypted(temporary, value)
+            if os.name == "nt":
+                os.rename(temporary, path)
+            else:
+                os.link(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def exists(self, path):
         return path.exists()
@@ -142,12 +157,16 @@ class JournalStore:
             if not self.storage.exists(path) or self.storage.read(path) != expected:
                 raise SimplifiError("Execution backup missing or changed; manual recovery required")
             if step.status == OperationState.VERIFIED:
-                if operation.action == "delete" and step.result is not None:
-                    raise SimplifiError("Deleted rule has a journal result")
-                if operation.action == "update" and (
-                    step.result is None or step.result.get("id") != operation.rule_id
-                ):
-                    raise SimplifiError("Updated rule has no matching journal result")
+                self.verify_result(operation, step.result)
+
+    def verify_result(self, operation, result):
+        """Resource-specific result validation; persistence and wire format stay shared."""
+        if operation.action == "delete" and result is not None:
+            raise SimplifiError("Deleted rule has a journal result")
+        if operation.action == "update" and (
+            result is None or result.get("id") != operation.rule_id
+        ):
+            raise SimplifiError("Updated rule has no matching journal result")
 
     def status(self):
         state = self.read()

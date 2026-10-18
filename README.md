@@ -131,6 +131,15 @@ The older single-update workflow retains separately authorized historical applic
 See [transaction-rule workflow](docs/transaction-rules.md) for API
 field names, CLI commands, preview coverage, and backfill limitations.
 
+## Transaction reviews
+
+`simplifi-review` downloads encrypted snapshots, records typed decisions, prepares
+exact category plans, and executes them with encrypted backups and resumable
+journals. It regenerates readable HTML on explicit request and imports legacy
+review evidence offline. Confirmations, exceptions, partial resolutions and
+reimbursement offsets are recorded without creating rules or transfer links.
+See [transaction reviews](docs/transaction-reviews.md) for commands and safeguards.
+
 ## Check reconciliation skill
 
 The repository includes
