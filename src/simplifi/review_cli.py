@@ -8,6 +8,11 @@ from pathlib import Path
 
 from simplifi.client import Client
 from simplifi.errors import SimplifiError
+from simplifi.relationship_plans import (
+    execute_relationship_plan,
+    inspect_relationship_plan,
+    prepare_relationship_plan,
+)
 from simplifi.review_import import build_legacy_import, import_legacy_review
 from simplifi.review_management import (
     attach_evidence,
@@ -46,6 +51,21 @@ def main(argv=None):
     download.add_argument("--end", type=date.fromisoformat, required=True)
     commands.add_parser("summary", parents=[review_args])
     commands.add_parser("inventory", parents=[review_args])
+    rel = commands.add_parser("relationship-plan", parents=[review_args])
+    rel.add_argument("--action", choices=["link", "unlink", "unlink_recurring"], required=True)
+    rel.add_argument("--transaction-id", action="append", required=True)
+    rel.add_argument(
+        "--targets-stdin",
+        action="store_true",
+        help="Read explicit unlink targets for both records as JSON from stdin",
+    )
+    rel.add_argument("--plan", type=Path, required=True)
+    rel_inspect = commands.add_parser("relationship-inspect")
+    rel_inspect.add_argument("--plan", type=Path, required=True)
+    rel_execute = commands.add_parser("relationship-execute", parents=[review_args])
+    rel_execute.add_argument("--plan", type=Path, required=True)
+    rel_execute.add_argument("--confirm", required=True)
+    rel_execute.add_argument("--journal", type=Path, required=True)
     show = commands.add_parser("show", parents=[review_args])
     show.add_argument("--number", type=int, required=True)
     commands.add_parser("unresolved", parents=[review_args])
@@ -116,6 +136,8 @@ def main(argv=None):
             result = inspect_transaction_plan(args.plan)
         elif args.command == "status":
             result = transaction_plan_status(args.journal)
+        elif args.command == "relationship-inspect":
+            result = inspect_relationship_plan(args.plan)
         elif args.command == "show":
             result = show_finding(args.review, args.number)
         elif args.command == "unresolved":
@@ -175,6 +197,23 @@ def main(argv=None):
             elif args.command == "plan":
                 result = prepare_transaction_plan(
                     client, args.review, plan_path=args.plan, decision_ids=args.decision_id
+                )
+            elif args.command == "relationship-plan":
+                result = prepare_relationship_plan(
+                    client,
+                    args.review,
+                    action=args.action,
+                    transaction_ids=args.transaction_id,
+                    plan_path=args.plan,
+                    targets=json.load(sys.stdin) if args.targets_stdin else None,
+                )
+            elif args.command == "relationship-execute":
+                result = execute_relationship_plan(
+                    client,
+                    args.plan,
+                    confirmation=args.confirm,
+                    journal_dir=args.journal,
+                    review_dir=args.review,
                 )
             elif args.command == "refresh":
                 result = refresh_transactions(client, args.review, args.transaction_id)

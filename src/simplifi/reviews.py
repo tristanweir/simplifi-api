@@ -280,10 +280,15 @@ def execution_outcomes(review):
     latest = {}
     for entry in review.history:
         if entry.get("kind") == "execution":
-            latest.update(entry.get("outcomes", {}))
+            latest.update(
+                {
+                    review.replacements.get(tid, tid): outcome
+                    for tid, outcome in entry.get("outcomes", {}).items()
+                }
+            )
         elif entry.get("kind") == "refresh":
             for tid in entry.get("invalidated", []):
-                latest.pop(tid, None)
+                latest.pop(review.replacements.get(tid, tid), None)
     return latest
 
 

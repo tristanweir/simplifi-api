@@ -23,46 +23,37 @@ No private account evidence belongs in this document.
   Transfer classification. Only eligible unlinked cash-flow records are supported.
 - Finding lookup by number, unresolved lists, local confirmations/evidence notes,
   selected-record refresh, and verified typed receipt import through `simplifi-review`.
+- Explicit payee/memo edits in existing transaction plans, preserving unselected notes.
+- Dedicated two-record transfer link/unlink plans and single-transaction recurring
+  unlink plans, including replacement-ID reconciliation and review projection.
+- Future-only rule creation plans with previews, stable client identity, encrypted
+  backups/journals, and verification that existing transactions remain unchanged.
 
-## Missing client operations
+## Operation boundaries and retained observations
 
 ### Create transaction rules
 
-The reusable rules executor supports updates/deletions, but not creation. Browser
-rule creation was used for authorized future-only rules. The existing preview
-request session can preview a proposed creation payload without a saved rule ID.
-
-Add a typed creation plan and a one-use scoped create session after verifying the
-request contract. Persist a checkpoint before dispatch; on an uncertain result,
-reconcile the rule list before any retry to avoid duplicate rules. Verify conditions,
-actions, historical-application settings, and preservation of existing rule actions.
-Do not broaden the ordinary HTTP method allowlist.
+Implemented in `simplifi.rule_creation` and the rules CLI's `create-plan`,
+`create-review`, and `create-execute` commands. Existing update/delete plan formats
+are preserved. Creation forces future-only application, rejects duplicate conditions,
+and reconciles the stable client identity before considering completion. A dropped
+client ID or ambiguous result blocks recovery; it never triggers another POST.
 
 ### Link existing transfer counterparts
 
-The category writer rejects existing transfers and only accepts category targets;
-the generic Transfer writer deliberately does not link records. The UI can set
-the outgoing record's category to the destination account and automatically match
-an existing incoming record with a different posted date.
-
-Add a dedicated plan binding the dataset, both transaction IDs, accounts, exact
-opposite amounts and originals. Verify reciprocal `transfer.id` references and
-`coa` account references on both existing records. Preserve amount direction,
-account, posted date, payee and notes. Do not create a new counterpart merely
-because automatic matching failed. Categorizing a ledger record is distinct from
-initiating an actual movement of money.
+Implemented in `simplifi.relationship_plans` using an exact batch for two existing
+records. Both must be unsplit cash-flow transactions in distinct accounts with
+known equal currencies, opposite amounts and no recurring association. Automatic
+matching and counterpart creation are not used. Dates, signs, notes and exclusions
+must survive read-back, along with reciprocal account/transaction references.
+Investment, split and multi-currency transfers remain unsupported.
 
 ### Remove incorrect account-transfer links
 
-The current category guard rejects a record with transfer metadata. In the UI,
-changing its account-transfer category to an expense category removes the link on
-both sides. The unrelated counterpart remains present but may become uncategorized.
-
-Implement this as an explicitly authorized two-record operation with encrypted
-originals for both sides. Review the counterpart's resulting classification;
-do not silently delete or reclassify it. Verify both links are removed and both
-records' financial details preserved. Include tests for bank-imported and merged
-pending/cleared records and automatic exclusion-flag changes.
+Implemented as an explicit reciprocal two-record relationship plan. Both resulting
+classifications must be provided. The counterpart is preserved even when manual;
+no deletion or implicit reclassification is requested. Both links and financial
+details are checked, with existing pending-record normalization kept narrow.
 
 Observed UI expense reclassification cleared both exclusion flags on the outgoing
 record and its unlinked deposit counterpart. An excluded destination account did
@@ -83,9 +74,9 @@ an unrelated account default must not be changed to edit a single transaction.
 
 ### Remove an incorrect recurring-series association
 
-There is no scoped client operation for this. The transaction detail UI offers
-Linked to series → Unlink → Update. This changes recurring tracking separately
-from a payee/category correction and needs authorization for that scope.
+Implemented as the separate `unlink_recurring` relationship action. It binds the
+selected association and bank identity and verifies that all series and unrelated
+records are unchanged. This remains separate from payee/category authorization.
 
 An observed unlink replaced the transaction ID while retaining bank description,
 account, date, amount, payee and category. A GET of the old ID then returned HTTP
@@ -93,18 +84,17 @@ account, date, amount, payee and category. A GET of the old ID then returned HTT
 `isBill`. Other matching metadata was still present; `matchedTxn` alone does not
 prove a recurring association remains.
 
-An implementation must bind the specific series association, capture the original
-and resulting IDs, detect ambiguous replacements, and reconcile before retrying.
-Verify that the series itself and other transactions are preserved. Do not treat
-an old-ID lookup failure as proof the write failed.
+The executor supports a retained ID or one verified replacement, updating the
+review replacement map atomically. Missing or ambiguous replacement evidence blocks
+completion without replay. An old-ID lookup failure is not proof the write failed.
 
 ### Edit payee or memo alongside category
 
-`update_category` exposes only a category edit. Browser editing was used to restore
-bank-supported payee names alongside categories. Add explicit typed editable fields
-and exact payload binding rather than exposing arbitrary whole-record updates.
-Preserve existing notes unless their replacement was authorized. Creating a rule
-or unlinking a series is a separate operation.
+Implemented with explicit `text_changes` in typed transaction plans and
+`update_transaction_fields`. `update_category` still changes only a category.
+Unselected notes are preserved; an empty memo explicitly clears them. Arbitrary
+whole-record edits, linked/split/investment text edits, and implicit rule/series
+changes remain unsupported.
 
 ## Observed pitfalls to retain in tests and investigation
 
@@ -127,6 +117,11 @@ or unlinking a series is a separate operation.
   investments, linked transfers, and payee/memo edits are outside the ordinary
   category writer's contract. Implement and test a separate scoped capability when
   needed; do not remove the guards as a workaround.
+
+The new request shapes were traced from saved public frontend code and tested with
+synthetic responses. No live account data was changed during implementation. See
+[write contracts](write-contracts.md) for provenance, verification boundaries and
+remaining server concurrency limitations.
 
 Private request/response evidence, exact account mappings and transaction identifiers
 belong under ignored local storage. Commit only generalized findings and synthetic

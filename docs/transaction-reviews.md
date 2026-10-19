@@ -1,9 +1,9 @@
 # Transaction reviews
 
 Use `simplifi-review` (or `python -m simplifi.review_cli`) after browser login.
-Only `execute` changes live transactions. Transfer classification and transaction
-exclusions are supported; rules, transfer links and recurring
-associations require separate operations.
+`execute` changes selected transaction fields. Dedicated `relationship-execute`
+plans link/unlink transfers or unlink a recurring association. Rule creation uses
+the separate rules CLI. Planning and inspection do not change live account data.
 
 ## Start a review
 
@@ -197,3 +197,76 @@ Use `save_encrypted` and `.to_wire()` to save it. Arbitrary legacy response shap
 are not treated as verified receipts. Import records history, updates current state,
 confirms the selected finding entry, and resolves matching import issues for that
 entry. It never executes the operation contained in the receipt.
+
+## Payee and memo edits
+
+Use `action: "text"` and explicit `text_changes`, or add `text_changes` to a
+category, Transfer, or exclusion decision. The same plan/inspect/execute commands
+and journal handle text edits. Only unlinked, unsplit cash-flow records are eligible.
+
+```json
+[
+  {"id": "merchant-fix", "finding_id": "example-finding",
+   "transaction_ids": ["example-transaction"], "action": "category",
+   "category_id": "dining-category",
+   "text_changes": {"payee": "Synthetic Cafe", "memo": "Team dinner"}}
+]
+```
+
+Omit `memo` to preserve notes. Use `"memo": ""` to explicitly clear them; nulls
+and non-string values are rejected. Payees must be nonblank. Editing text does not
+create rules or unlink a recurring series. Inspection shows exact text changes.
+
+## Transfer pairs and recurring associations
+
+Relationship plans contain exactly one operation. For linking, explicitly select
+two existing unsplit cash-flow records in different accounts, with exact opposite
+nonzero amounts and known equal currencies. Both must be unlinked and free of
+recurring associations. No counterpart is ever created. Refresh stale selected
+review evidence before planning; preparation requires it to match live originals.
+
+```powershell
+simplifi-review relationship-plan --review .local/review --action link --transaction-id example-debit --transaction-id example-credit --plan .local/link.dpapi
+simplifi-review relationship-inspect --plan .local/link.dpapi
+simplifi-review relationship-execute --review .local/review --plan .local/link.dpapi --confirm <digest> --journal .local/link-run
+simplifi-review status --journal .local/link-run
+```
+
+For unlinking, select the existing reciprocal pair and provide the resulting
+classification for **both** records through stdin. Unlinking preserves both
+records and their flags even if one counterpart was entered manually:
+
+```powershell
+@'
+{"example-debit":{"type":"CATEGORY","id":"dining-category"},
+ "example-credit":{"type":"UNCATEGORIZED","id":"0"}}
+'@ | simplifi-review relationship-plan --review .local/review --action unlink --transaction-id example-debit --transaction-id example-credit --targets-stdin --plan .local/unlink.dpapi
+```
+
+Use `relationship-inspect` and `relationship-execute` as above. Targets may be an
+assignable category, exact `UNCATEGORIZED/0`, or generic Transfer
+(`BALANCE_ADJUSTMENT/2`); account targets cannot silently establish a different link.
+
+To unlink a recurring series from one existing bank transaction:
+
+```powershell
+simplifi-review relationship-plan --review .local/review --action unlink_recurring --transaction-id example-transaction --plan .local/series-unlink.dpapi
+```
+
+The original `stModelId`, bank identity and all series are bound to the plan.
+Scheduled reminders, investments, splits and account-linked transfers are rejected.
+Execution verifies association removal, the financial fields, unchanged series and
+unrelated records. A unique verified replacement ID updates the review's replacement
+map. A missing old ID is never interpreted as failure requiring another write.
+
+Plans, backups and receipts remain encrypted. Execution uses one scoped request,
+records dispatch intent, and reconciles through reads. A partial two-record batch,
+unexpected new counterpart, ambiguous replacement, changed series, or altered
+notes/flags blocks completion. Resume with the same plan/journal; never use a new
+plan to bypass an uncertain result. A crash during local projection can resume
+without repeating the API request. Findings may then be confirmed using the normal
+local review command; successful relationship execution does not implicitly dismiss
+other concerns in a finding. Render HTML explicitly afterward.
+
+See [write contracts](write-contracts.md) for static frontend evidence, live-validation
+status, and remaining server concurrency limitations.

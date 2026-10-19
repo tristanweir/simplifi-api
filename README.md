@@ -127,6 +127,9 @@ encrypted plans/backups, explicit confirmation, and scoped rule updates/deletion
 `simplifi.rule_plans` adds reusable future-only batches, encrypted execution journals,
 read-back verification, and safe resume without replaying uncertain writes. CLI
 commands include `inspect`, `plan`, `review`, `execute`, `delete`, and `status`.
+`simplifi.rule_creation` provides separate future-only creation plans through
+`create-plan`, `create-review`, and `create-execute`, with duplicate detection and
+read-based recovery before any retry.
 The older single-update workflow retains separately authorized historical application.
 See [transaction-rule workflow](docs/transaction-rules.md) for API
 field names, CLI commands, preview coverage, and backfill limitations.
@@ -134,8 +137,10 @@ field names, CLI commands, preview coverage, and backfill limitations.
 ## Transaction reviews
 
 `simplifi-review` downloads encrypted snapshots, records typed decisions, prepares
-exact category, Transfer-direction and exclusion plans, and executes them with encrypted backups and resumable
-journals. It regenerates readable HTML on explicit request and imports legacy
+exact category, Transfer-direction, exclusion and payee/memo plans, and executes
+them with encrypted backups and resumable journals. Dedicated relationship plans
+link/unlink existing transfer pairs and unlink recurring associations, including
+replacement-ID reconciliation. It regenerates readable HTML on explicit request and imports legacy
 review evidence offline. Finding lookup, unresolved lists, selected refresh and
 verified receipt imports support ongoing review without custom scripts.
 Confirmations, exceptions, partial resolutions and

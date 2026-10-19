@@ -4,12 +4,15 @@
 finds one active rule through that listing. These are distinct from alert rules.
 
 The ordinary HTTP client stays read-only. The opt-in rules module permits only one
-exact preview, approved rule update, or approved rule deletion per request session.
+exact preview, approved rule update/deletion, or future-only creation per session.
 The reusable `simplifi.rule_plans` workflow coordinates updates/deletions with
-encrypted plans and a durable execution journal. Creating and reordering rules
-are not exposed. Ordinary reads never enable mutations.
+encrypted plans and a durable execution journal. Creation has its own
+`simplifi.rule_creation` plan format; arbitrary reordering is not exposed.
+Ordinary reads never enable mutations.
 
 ## Reusable change plans (recommended)
+
+For new rules, see [future-only creation](#future-only-creation) below.
 
 Use stable API rule IDs, not row numbers from a report. Inspect a selection first:
 
@@ -48,6 +51,44 @@ Review output contains private rule details: avoid redirecting it into tracked f
 Plaintext operation inputs are optional; encrypted inputs avoid storing those details
 in plaintext. Plan, backup, and checkpoint contents always use current-user Windows
 DPAPI with no plaintext fallback. Keep inputs and journals under ignored `.local/`.
+
+## Future-only creation
+
+Pass editable API fields through stdin, or use `--changes` with an encrypted
+`.dpapi` object. Creation never inherits server IDs, hash values, timestamps,
+ordering pointers, or historical-application flags:
+
+```powershell
+@'
+{"payeeSourceCondition":{"payeeType":"STATEMENT","payeeMatchingCriteria":[
+ {"payeeMatchingOperator":"CONTAINS","payeeName":"Synthetic Merchant"}]},
+ "coaTargetCondition":{"type":"CATEGORY","id":"dining-category"}}
+'@ | simplifi-rules create-plan --stdin --plan .local/new-rule.dpapi
+simplifi-rules create-review --plan .local/new-rule.dpapi
+simplifi-rules create-execute --plan .local/new-rule.dpapi --confirm <digest> --journal .local/new-rule-run
+simplifi-rules status --journal .local/new-rule-run
+```
+
+The encrypted plan binds the dataset, rule baseline, category definitions, a stable
+client ID, exact payload and read-only preview. A rule with identical conditions
+blocks creation; update the existing rule after reviewing it. Category targets and
+specific source accounts must exist. Category/flag/payee/memo actions use editable
+rule fields; account-transfer target creation is not supported.
+
+Execution rechecks the preview and originals, saves a backup and dispatch checkpoint,
+then permits one `POST /transaction-rules` with `applyToExistingTransactions: false`.
+Current transactions must remain unchanged before and after creation. The new rule
+must be the only addition, match the client ID and selected conditions/actions, and
+preserve existing rules except for verified reciprocal ordering insertion pointers.
+The plan does not authorize arbitrary reordering or historical application.
+
+After interruption or an uncertain response, run the same execution command. It
+reads rules and verifies results without replaying the POST. Missing/duplicate
+matches, a dropped client ID, unexpected historical changes or unrelated rule edits
+block recovery for manual investigation. HTTP success alone does not mark completion.
+Keep the plan and journal. `create-review` and `status` work offline. Existing update
+and delete plan formats are unchanged. See [write contracts](write-contracts.md)
+for frontend evidence and the lack of live backend validation during development.
 
 Single deletions use the same implementation:
 
