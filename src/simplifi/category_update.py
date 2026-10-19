@@ -186,13 +186,23 @@ def update_category(client, original, category, *, backup_path: Path):
 EXCLUSION_FIELDS = frozenset({"isExcludedFromReports", "isExcludedFromF2S"})
 
 
-def transaction_edit_payload(original, *, category=None, incoming=None, exclusions=None):
+def transaction_edit_payload(
+    original, *, category=None, incoming=None, exclusions=None, text_changes=None
+):
     """Compose only explicitly selected classification and transaction flag edits."""
     exclusions = {} if exclusions is None else exclusions
     if not isinstance(exclusions, dict) or not exclusions.keys() <= EXCLUSION_FIELDS:
         raise ReadOnlyViolation("Unsupported exclusion fields")
     if any(type(value) is not bool for value in exclusions.values()):
         raise ReadOnlyViolation("Exclusions require explicit booleans")
+    text_changes = {} if text_changes is None else text_changes
+    if (
+        not isinstance(text_changes, dict)
+        or not text_changes.keys() <= {"payee", "memo"}
+        or any(type(v) is not str for v in text_changes.values())
+        or ("payee" in text_changes and not text_changes["payee"].strip())
+    ):
+        raise ReadOnlyViolation("Text edits support a nonempty payee and string memo only")
     if category is not None and incoming is not None:
         raise ReadOnlyViolation("Select a category or Transfer, not both")
     if incoming is not None:
@@ -200,9 +210,9 @@ def transaction_edit_payload(original, *, category=None, incoming=None, exclusio
     elif category is not None:
         payload = category_payload(original, category)
     else:
-        if not exclusions:
+        if not exclusions and not text_changes:
             raise ReadOnlyViolation("No transaction changes selected")
-        # Flag-only edits share the same unlinked cash-flow boundary, including $0.
+        # Text/flag-only edits share the unlinked cash-flow boundary, including $0.
         coa = original.get("coa", {})
         if (
             original.get("type") != "CASH_FLOW"
@@ -216,29 +226,44 @@ def transaction_edit_payload(original, *, category=None, incoming=None, exclusio
                 in ({"type": "UNCATEGORIZED", "id": "0"}, {"type": "BALANCE_ADJUSTMENT", "id": "2"})
             )
         ):
-            raise ReadOnlyViolation("Only unlinked, unsplit cash-flow flag edits are supported")
+            raise ReadOnlyViolation(
+                "Only unlinked, unsplit cash-flow text/flag edits are supported"
+            )
         payload = {k: copy.deepcopy(v) for k, v in original.items() if k in _FIELDS}
         payload["type"] = "CASH_FLOW"
     payload.update(exclusions)
+    payload.update(text_changes)
     return payload
 
 
-def edit_fields(*, category=None, incoming=None, exclusions=None):
+def edit_fields(*, category=None, incoming=None, exclusions=None, text_changes=None):
     return (
         ({"coa"} if category is not None else set())
         | ({"coa", "amount"} if incoming is not None else set())
         | set(exclusions or {})
+        | set(text_changes or {})
     )
 
 
 def update_transaction_fields(
-    client, original, *, category=None, incoming=None, exclusions=None, backup_path: Path
+    client,
+    original,
+    *,
+    category=None,
+    incoming=None,
+    exclusions=None,
+    text_changes=None,
+    backup_path: Path,
 ):
     current = client.transaction(original["id"])
     if current != original:
         raise SimplifiError("Transaction changed since selection; read it again before updating")
     payload = transaction_edit_payload(
-        current, category=category, incoming=incoming, exclusions=exclusions
+        current,
+        category=category,
+        incoming=incoming,
+        exclusions=exclusions,
+        text_changes=text_changes,
     )
     return _execute_correction(
         client,
@@ -247,7 +272,9 @@ def update_transaction_fields(
         backup_path=backup_path,
         backup={"dataset_id": client.dataset_id, "original": current, "payload": payload},
         session=_SinglePayloadSession(current, payload),
-        allowed_changes=edit_fields(category=category, incoming=incoming, exclusions=exclusions),
+        allowed_changes=edit_fields(
+            category=category, incoming=incoming, exclusions=exclusions, text_changes=text_changes
+        ),
     )
 
 

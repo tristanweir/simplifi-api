@@ -51,7 +51,7 @@ def prepare_transaction_plan(client, review_dir, *, plan_path, decision_ids=None
     categories = client.categories()
     requests = {}
     for d in selected:
-        if d.action not in {"category", "transfer", "exclusions", "confirm"}:
+        if d.action not in {"category", "transfer", "exclusions", "text", "confirm"}:
             continue
         for old_id in d.transaction_ids:
             tid = review.replacements.get(old_id, old_id)
@@ -62,6 +62,7 @@ def prepare_transaction_plan(client, review_dir, *, plan_path, decision_ids=None
                 "category": target,
                 "incoming": d.incoming,
                 "exclusions": d.exclusions,
+                "text_changes": d.text_changes,
             }
             previous = requests.get(tid)
             if previous and any(previous[k] != v for k, v in request.items()):
@@ -88,6 +89,7 @@ def prepare_transaction_plan(client, review_dir, *, plan_path, decision_ids=None
                     category=request["category"],
                     incoming=request["incoming"],
                     exclusions=request["exclusions"],
+                    text_changes=request["text_changes"],
                 )
                 if request["action"] != "confirm"
                 else None,
@@ -133,6 +135,10 @@ def inspect_transaction_plan(plan_path):
                 "after_exclusions": {
                     k: (op.payload or op.original).get(k, False) for k in sorted(EXCLUSION_FIELDS)
                 },
+                "text_changes": {
+                    k: {"before": op.original.get(k), "after": v}
+                    for k, v in op.text_changes.items()
+                },
                 "already_correct": _already_correct(op),
             }
             for op in plan.operations
@@ -148,7 +154,12 @@ class TransactionJournal(JournalStore):
 
 
 def _fields(op):
-    return edit_fields(category=op.category, incoming=op.incoming, exclusions=op.exclusions)
+    return edit_fields(
+        category=op.category,
+        incoming=op.incoming,
+        exclusions=op.exclusions,
+        text_changes=op.text_changes,
+    )
 
 
 def _already_correct(op):
@@ -256,14 +267,14 @@ def execute_transaction_plan(client, plan_path, *, confirmation, journal_dir, re
                 continue
             journal.save_backup(index, op, confirmation)
             state = journal.checkpoint(state.replace_step(index, OperationState.DISPATCHED))
-            if op.action == "category" and not op.exclusions:
+            if op.action == "category" and not op.exclusions and not op.text_changes:
                 update_category(
                     client,
                     op.original,
                     op.category,
                     backup_path=Path(journal_dir) / f"write-{index:08d}.dpapi",
                 )
-            elif op.action == "transfer" and not op.exclusions:
+            elif op.action == "transfer" and not op.exclusions and not op.text_changes:
                 update_transfer_classification(
                     client,
                     op.original,
@@ -277,6 +288,7 @@ def execute_transaction_plan(client, plan_path, *, confirmation, journal_dir, re
                     category=op.category,
                     incoming=op.incoming,
                     exclusions=op.exclusions,
+                    **({"text_changes": op.text_changes} if op.text_changes else {}),
                     backup_path=Path(journal_dir) / f"write-{index:08d}.dpapi",
                 )
             state = _reconcile(client, plan, state, journal)

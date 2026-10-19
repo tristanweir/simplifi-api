@@ -511,3 +511,83 @@ def test_confirm_preserves_accepted_offset_evidence(review_setup):
     refresh_transactions(client, directory, ["t2"])
     assert load_review(directory).context["reimbursement_offsets"] == []
     assert review_summary(load_review(directory))["confirmed"] == 0
+
+
+@pytest.mark.parametrize(
+    "action,extra",
+    [
+        ("text", {}),
+        ("category", {"category_id": "new"}),
+        ("transfer", {"incoming": True}),
+        ("exclusions", {"exclusions": {"isExcludedFromReports": False}}),
+    ],
+)
+def test_payee_and_memo_edits_are_bound_and_resumable(
+    review_setup, tmp_path, monkeypatch, action, extra
+):
+    directory, client, store = review_setup
+    original = copy.deepcopy(store["t1"])
+    decision(directory, action, text_changes={"payee": "Correct Merchant", "memo": ""}, **extra)
+    path, preview, kw = plan(directory, client, tmp_path)
+    assert preview["operations"][0]["text_changes"]["memo"]["after"] == ""
+    calls = []
+
+    def writer(client, original, *, category, incoming, exclusions, text_changes, backup_path):
+        calls.append(original["id"])
+        store[original["id"]].update(
+            transaction_edit_payload(
+                original,
+                category=category,
+                incoming=incoming,
+                exclusions=exclusions,
+                text_changes=text_changes,
+            )
+        )
+        raise SimplifiError("Lost reply after success")
+
+    monkeypatch.setattr("simplifi.transaction_plans.update_transaction_fields", writer)
+    with pytest.raises(SimplifiError):
+        execute_transaction_plan(client, path, **kw)
+    execute_transaction_plan(client, path, **kw)
+    assert calls == ["t1"]
+    current = load_review(directory).current.transactions[0]
+    assert current["payee"] == "Correct Merchant" and current["memo"] == ""
+    assert current["amount"] == original["amount"]
+    assert current["isExcludedFromF2S"] is original["isExcludedFromF2S"]
+    assert current.get("cpData") == original.get("cpData")
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"payee": " "},
+        {"memo": None},
+        {"memo": 42},
+        {"accountId": "not-editable"},
+        {"payee": ["bad"]},
+    ],
+)
+def test_invalid_text_decisions_fail_closed(changes):
+    with pytest.raises(ValidationError):
+        Decision(id="d", finding_id="f", transaction_ids=["t"], action="text", text_changes=changes)
+
+
+def test_payee_only_does_not_clear_existing_memo(review_setup):
+    _, _, store = review_setup
+    original = {**store["t1"], "memo": "Preserve note"}
+    payload = transaction_edit_payload(original, text_changes={"payee": "Correct Merchant"})
+    assert payload["memo"] == "Preserve note" and payload["amount"] == 42.50
+    with pytest.raises(ReadOnlyViolation):
+        transaction_edit_payload(
+            {**original, "transfer": {"id": "other"}}, text_changes={"memo": ""}
+        )
+
+
+def test_old_category_plan_omits_text_fields(review_setup, tmp_path):
+    directory, client, _ = review_setup
+    decision(directory, "category", category_id="new")
+    path, _, _ = plan(directory, client, tmp_path)
+    wire = load_encrypted(path)
+    assert "text_changes" not in wire["decisions"][0]
+    assert "text_changes" not in wire["operations"][0]
+    assert TransactionPlan.model_validate(wire).to_wire() == wire

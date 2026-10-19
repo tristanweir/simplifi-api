@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import Field, StrictBool, model_serializer, model_validator
+from pydantic import Field, StrictBool, StrictStr, model_serializer, model_validator
 
 from simplifi.category_update import transaction_edit_payload
 from simplifi.rule_plan_models import StrictModel
@@ -46,8 +46,11 @@ class Decision(StrictModel):
     id: str = Field(min_length=1)
     finding_id: str
     transaction_ids: list[str] = Field(min_length=1)
-    action: Literal["category", "transfer", "exclusions", "confirm", "dismiss", "unresolved"]
+    action: Literal[
+        "category", "transfer", "exclusions", "text", "confirm", "dismiss", "unresolved"
+    ]
     category_id: str | None = None
+    text_changes: dict[Literal["payee", "memo"], StrictStr] = Field(default_factory=dict)
     incoming: StrictBool | None = None
     exclusions: dict[Literal["isExcludedFromReports", "isExcludedFromF2S"], StrictBool] = Field(
         default_factory=dict
@@ -74,7 +77,13 @@ class Decision(StrictModel):
             raise ValueError("Transfer requires an explicit direction")
         if self.action == "exclusions" and not self.exclusions:
             raise ValueError("Exclusions action requires explicit flags")
-        if self.action in {"confirm", "dismiss", "unresolved"} and self.exclusions:
+        if self.action == "text" and not self.text_changes:
+            raise ValueError("Text action requires explicit fields")
+        if "payee" in self.text_changes and not self.text_changes["payee"].strip():
+            raise ValueError("Payee must not be blank")
+        if self.action in {"confirm", "dismiss", "unresolved"} and (
+            self.exclusions or self.text_changes
+        ):
             raise ValueError("Local dispositions cannot edit exclusions")
         return self
 
@@ -82,6 +91,8 @@ class Decision(StrictModel):
     def serialize(self, handler):
         wire = handler(self)
         # Retain canonical v1 bytes/digests for previously saved plans and journals.
+        if not self.text_changes:
+            wire.pop("text_changes")
         if self.incoming is None:
             wire.pop("incoming")
         if not self.exclusions:
@@ -129,12 +140,13 @@ class Review(StrictModel):
 
 
 class TransactionOperation(StrictModel):
-    action: Literal["category", "transfer", "exclusions", "confirm"]
+    action: Literal["category", "transfer", "exclusions", "text", "confirm"]
     transaction_id: str
     original: Record
     category: Record | None = None
     payload: Record | None = None
     decision_ids: list[str]
+    text_changes: dict[Literal["payee", "memo"], StrictStr] = Field(default_factory=dict)
     incoming: StrictBool | None = None
     exclusions: dict[Literal["isExcludedFromReports", "isExcludedFromF2S"], StrictBool] = Field(
         default_factory=dict
@@ -150,6 +162,7 @@ class TransactionOperation(StrictModel):
                 or self.payload is not None
                 or self.incoming is not None
                 or self.exclusions
+                or self.text_changes
             ):
                 raise ValueError("Confirmation cannot mutate a transaction")
             return self
@@ -157,12 +170,17 @@ class TransactionOperation(StrictModel):
             raise ValueError("Category action requires exactly one category")
         if (self.action == "transfer") != (self.incoming is not None):
             raise ValueError("Transfer action requires a direction")
+        if self.action == "text" and not self.text_changes:
+            raise ValueError("Text operation requires explicit fields")
+        if self.action == "exclusions" and not self.exclusions:
+            raise ValueError("Exclusion operation requires explicit flags")
         if (
             transaction_edit_payload(
                 self.original,
                 category=self.category,
                 incoming=self.incoming,
                 exclusions=self.exclusions,
+                text_changes=self.text_changes,
             )
             != self.payload
         ):
@@ -172,6 +190,8 @@ class TransactionOperation(StrictModel):
     @model_serializer(mode="wrap")
     def serialize(self, handler):
         wire = handler(self)
+        if not self.text_changes:
+            wire.pop("text_changes")
         if self.incoming is None:
             wire.pop("incoming")
         if not self.exclusions:
