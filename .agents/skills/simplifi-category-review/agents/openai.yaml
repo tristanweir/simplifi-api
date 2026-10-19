@@ -1,0 +1,4 @@
+interface:
+  display_name: "Simplifi Category Review"
+  short_description: "Review and reconcile transaction categorization"
+  default_prompt: "Use $simplifi-category-review to review transaction categories, reconcile suspicious entries, and propose corrections."
