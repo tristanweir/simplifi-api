@@ -2,10 +2,16 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from simplifi.client import Client
 from simplifi.errors import SimplifiError
+from simplifi.rule_creation import (
+    execute_rule_creation,
+    inspect_rule_creation,
+    prepare_rule_creation,
+)
 from simplifi.rule_plans import (
     apply_rule_deletion,
     change_plan_status,
@@ -22,10 +28,21 @@ from simplifi.transaction_rules import (
 )
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Simplifi transaction rules")
     parser.add_argument("--dataset-id")
     commands = parser.add_subparsers(dest="command", required=True)
+    create = commands.add_parser("create-plan", help="Preview a future-only rule creation")
+    source = create.add_mutually_exclusive_group(required=True)
+    source.add_argument("--stdin", action="store_true")
+    source.add_argument("--changes", type=Path, help="Encrypted .dpapi editable fields")
+    create.add_argument("--plan", type=Path, required=True)
+    create_review = commands.add_parser("create-review")
+    create_review.add_argument("--plan", type=Path, required=True)
+    create_execute = commands.add_parser("create-execute")
+    create_execute.add_argument("--plan", type=Path, required=True)
+    create_execute.add_argument("--confirm", required=True)
+    create_execute.add_argument("--journal", type=Path, required=True)
     listing = commands.add_parser("list")
     listing.add_argument("--encrypted-output", type=Path)
     inspect = commands.add_parser("inspect")
@@ -64,8 +81,11 @@ def main():
         action="store_true",
         help="Explicitly authorize the historical application in the approved plan",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
+        if args.command == "create-review":
+            print(json.dumps(inspect_rule_creation(args.plan), indent=2))
+            return
         if args.command in {"review", "status"}:
             result = (
                 inspect_change_plan(args.plan)
@@ -79,6 +99,23 @@ def main():
             client.resolve_dataset()
         if args.command == "inspect":
             print(json.dumps(client.transaction_rule(args.rule_id), indent=2))
+        elif args.command == "create-plan":
+            if args.stdin:
+                changes = json.load(sys.stdin)
+            elif args.changes.suffix == ".dpapi":
+                changes = load_encrypted(args.changes)
+            else:
+                raise SimplifiError("Creation input requires encrypted .dpapi or stdin")
+            print(json.dumps(prepare_rule_creation(client, changes, plan_path=args.plan), indent=2))
+        elif args.command == "create-execute":
+            print(
+                json.dumps(
+                    execute_rule_creation(
+                        client, args.plan, confirmation=args.confirm, journal_dir=args.journal
+                    ),
+                    indent=2,
+                )
+            )
         elif args.command == "plan":
             if args.delete_rule_id:
                 result = prepare_rule_deletion(client, args.delete_rule_id, plan_path=args.plan)

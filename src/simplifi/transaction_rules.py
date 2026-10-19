@@ -159,11 +159,30 @@ class RuleRequestSession(SecureSession):
         if not (
             method == "POST"
             and path == PREVIEW_PATH
+            or method == "POST"
+            and path == "/transaction-rules"
             or method in {"PUT", "DELETE"}
             and re.fullmatch(r"/transaction-rules/[A-Za-z0-9_-]+", path)
             and (method != "DELETE" or payload is None)
         ):
             raise ReadOnlyViolation("Unsupported rule operation")
+        if method == "POST" and path == "/transaction-rules":
+            from simplifi.rule_creation import creation_payload
+
+            if (
+                not isinstance(payload, dict)
+                or payload.get("applyToExistingTransactions") is not False
+                or payload
+                != creation_payload(
+                    {
+                        k: v
+                        for k, v in payload.items()
+                        if k not in {"clientId", "applyToExistingTransactions"}
+                    },
+                    client_id=payload.get("clientId"),
+                )
+            ):
+                raise ReadOnlyViolation("Invalid future-only rule creation payload")
         self.method, self.url, self.payload, self.used = (
             method,
             BASE_URL + path,
@@ -176,7 +195,7 @@ class RuleRequestSession(SecureSession):
             self.used
             or method != self.method
             or url != self.url
-            or kwargs.get("json") != self.payload
+            or digest(kwargs.get("json")) != digest(self.payload)
             or kwargs.get("params")
             or kwargs.get("data")
         ):
