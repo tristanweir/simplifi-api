@@ -46,6 +46,8 @@ def _load_plan(path):
 
 def inspect_change_plan(plan_path):
     """Return a reviewable diff and confirmation digest without authenticating."""
+    from simplifi.rule_preview import preview_warnings
+
     plan = _load_plan(plan_path)
     operations = []
     for op in plan.operations:
@@ -62,6 +64,7 @@ def inspect_change_plan(plan_path):
                 for k in ("srcTxnsCount", "resultTxnsCount", "previewTxnsEndDate")
             }
             row["preview"].update(sample_count=len(op.preview["transactions"]), exhaustive=False)
+            row["preview"]["warnings"] = preview_warnings(op.payload)
         operations.append(row)
     return {
         "confirmation": digest(plan.to_wire()),

@@ -157,6 +157,8 @@ def _load(path):
 
 
 def inspect_rule_creation(path):
+    from simplifi.rule_preview import preview_warnings
+
     plan = _load(path)
     op = plan.operations[0]
     return {
@@ -165,6 +167,7 @@ def inspect_rule_creation(path):
         "payload": op.payload,
         "preview": op.preview,
         "apply_to_existing": False,
+        "warnings": preview_warnings(op.payload),
     }
 
 

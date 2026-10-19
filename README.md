@@ -146,6 +146,10 @@ verified receipt imports support ongoing review without custom scripts.
 Confirmations, exceptions, partial resolutions and
 reimbursement offsets are recorded without creating rules or transfer links.
 See [transaction reviews](docs/transaction-reviews.md) for commands and safeguards.
+Cached account-trail reconciliation, encrypted analysis preferences, incremental
+sync and read-only rule boundary probes are described in
+[analysis workflow](docs/analysis-workflow.md). These helpers retain ambiguity and
+never turn a candidate into a live correction automatically.
 
 ## Check reconciliation skill
 

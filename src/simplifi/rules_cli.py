@@ -20,6 +20,7 @@ from simplifi.rule_plans import (
     prepare_change_plan,
     prepare_rule_deletion,
 )
+from simplifi.rule_preview import inspect_amount_probe, probe_rule_amounts
 from simplifi.transaction_rules import (
     apply_rule_update,
     load_encrypted,
@@ -32,6 +33,18 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Simplifi transaction rules")
     parser.add_argument("--dataset-id")
     commands = parser.add_subparsers(dest="command", required=True)
+    probe = commands.add_parser(
+        "amount-probe", help="Read-only boundary previews; never updates a rule"
+    )
+    probe.add_argument("--rule-id", required=True)
+    probe.add_argument("--transaction-id", action="append", required=True)
+    probe.add_argument("--threshold", action="append")
+    probe.add_argument(
+        "--operator", choices=["GREATER_THAN", "LESS_THAN", "EQUALS"], default="GREATER_THAN"
+    )
+    probe.add_argument("--encrypted-output", type=Path, required=True)
+    report = commands.add_parser("amount-report")
+    report.add_argument("--report", type=Path, required=True)
     create = commands.add_parser("create-plan", help="Preview a future-only rule creation")
     source = create.add_mutually_exclusive_group(required=True)
     source.add_argument("--stdin", action="store_true")
@@ -83,6 +96,9 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
+        if args.command == "amount-report":
+            print(json.dumps(inspect_amount_probe(args.report), indent=2))
+            return
         if args.command == "create-review":
             print(json.dumps(inspect_rule_creation(args.plan), indent=2))
             return
@@ -99,6 +115,20 @@ def main(argv=None):
             client.resolve_dataset()
         if args.command == "inspect":
             print(json.dumps(client.transaction_rule(args.rule_id), indent=2))
+        elif args.command == "amount-probe":
+            print(
+                json.dumps(
+                    probe_rule_amounts(
+                        client,
+                        args.rule_id,
+                        args.transaction_id,
+                        output_path=args.encrypted_output,
+                        thresholds=args.threshold or ("0", "0.01"),
+                        operator=args.operator,
+                    ),
+                    indent=2,
+                )
+            )
         elif args.command == "create-plan":
             if args.stdin:
                 changes = json.load(sys.stdin)

@@ -98,6 +98,12 @@ changes remain unsupported.
 
 ## Observed pitfalls to retain in tests and investigation
 
+Cached reconciliation, ownership/convention-aware analysis and incremental review
+sync now have packaged commands. Read-only rule amount probes retain exact request
+thresholds and encrypted evidence; the zero-threshold backend cause remains
+unconfirmed. See [analysis workflow](analysis-workflow.md) for commands, ambiguity,
+sync coverage limits and preview sample limitations.
+
 - **Investment category review:** standard spending categories in raw investment
   records can be misleading. Inspect transaction type, investment action, and
   exclusion flags. Do not rewrite trades just because a raw category resembles a
@@ -113,10 +119,10 @@ changes remain unsupported.
   incoming amount. Preview without mutating live rules before changing thresholds.
 - **Browser timeouts after a successful save:** read the exact record and relevant
   counterpart before considering another write. A timeout is not proof of failure.
-- **Category-write boundaries:** unrecognized uncategorized classifications, split records,
-  investments, linked transfers, and payee/memo edits are outside the ordinary
-  category writer's contract. Implement and test a separate scoped capability when
-  needed; do not remove the guards as a workaround.
+- **Category-write boundaries:** unrecognized uncategorized classifications, split
+  records, investments and linked transfers remain outside the ordinary category
+  writer's contract. Payee/memo edits and relationship changes now have separate
+  scoped capabilities. Do not remove category guards as a workaround.
 
 The new request shapes were traced from saved public frontend code and tested with
 synthetic responses. No live account data was changed during implementation. See

@@ -243,6 +243,8 @@ def preview_rule(client, rule, changes=None, *, apply_to_existing=False):
 
 
 def prepare_rule_update(client, original, changes, *, plan_path, apply_to_existing=False):
+    from simplifi.rule_preview import preview_warnings
+
     if client.transaction_rule(original["id"]) != original:
         raise SimplifiError("Rule changed since selection; fetch it again")
     payload = rule_payload(original, changes, apply_to_existing=apply_to_existing)
@@ -269,6 +271,7 @@ def prepare_rule_update(client, original, changes, *, plan_path, apply_to_existi
         "matching_transaction_count": preview.get("resultTxnsCount"),
         "preview_boundary": preview.get("previewTxnsEndDate"),
         "preview_is_exhaustive": False,
+        "warnings": preview_warnings(payload),
     }
 
 
