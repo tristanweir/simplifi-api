@@ -76,20 +76,53 @@ def resolve_category(categories, *, category_id=None, name=None):
     return matches[0]
 
 
-def record_decisions(directory, decisions):
+def supersede_decisions(existing, incoming):
+    """Replace dispositions for selected entries, retaining unrelated group members."""
+    selections = defaultdict(set)
+    for d in incoming:
+        selections[d.finding_id].update(d.transaction_ids)
+    retained = []
+    incoming_ids = {d.id for d in incoming}
+    for d in existing:
+        if d.id in incoming_ids:
+            continue
+        remaining = [tid for tid in d.transaction_ids if tid not in selections[d.finding_id]]
+        if remaining:
+            wire = d.to_wire()
+            wire["transaction_ids"] = remaining
+            for field in ("exceptions", "offsets"):
+                wire[field] = {k: v for k, v in wire[field].items() if k in remaining}
+            retained.append(Decision.model_validate(wire))
+    return retained + incoming
+
+
+def record_decisions(directory, decisions, *, expected_current=None, supersede=False):
     """Upsert explicit decision IDs; changes do not authenticate or execute writes."""
     parsed = [Decision.model_validate(d) for d in decisions]
     if not parsed or len({d.id for d in parsed}) != len(parsed):
         raise SimplifiError("Provide nonempty decisions with unique IDs")
     with JournalStore(Path(directory) / "execution").locked(), JournalStore(directory).locked():
         review = load_review(directory)
-        updates = {d.id: d for d in review.decisions}
+        if expected_current is not None and digest(review.current.to_wire()) != expected_current:
+            raise SimplifiError("Review evidence changed before recording the decision")
+        existing = supersede_decisions(review.decisions, parsed) if supersede else review.decisions
+        updates = {d.id: d for d in existing}
         updates.update({d.id: d for d in parsed})
         wire = review.to_wire()
         wire["decisions"] = [d.to_wire() for d in updates.values()]
         txns = {str(t["id"]): t for t in review.current.transactions}
-        used = {}
-        offsets = []
+        revised_credits = {
+            review.replacements.get(tid, tid)
+            for d in parsed
+            if d.action in {"category", "unresolved"}
+            for tid in d.transaction_ids
+        }
+        offsets = [
+            o
+            for o in review.context.get("reimbursement_offsets", [])
+            if o["credit_id"] not in revised_credits
+        ]
+        used = {o["expense_id"]: o["credit_id"] for o in offsets}
         for d in updates.values():
             for credit, expense in d.offsets.items():
                 credit = review.replacements.get(credit, credit)
@@ -105,16 +138,15 @@ def record_decisions(directory, decisions):
                 if expense in used and used[expense] != credit:
                     raise SimplifiError("Expense already assigned to another reimbursement")
                 used[expense] = credit
-                offsets.append(
-                    {
-                        "credit_id": credit,
-                        "expense_id": expense,
-                        "amount_difference": str(
-                            Decimal(str(txns[credit]["amount"]))
-                            + Decimal(str(txns[expense]["amount"]))
-                        ),
-                    }
-                )
+                evidence = {
+                    "credit_id": credit,
+                    "expense_id": expense,
+                    "amount_difference": str(
+                        Decimal(str(txns[credit]["amount"])) + Decimal(str(txns[expense]["amount"]))
+                    ),
+                }
+                if evidence not in offsets:
+                    offsets.append(evidence)
         wire["context"]["used_reimbursement_expense_ids"] = sorted(used)
         wire["context"]["reimbursement_offsets"] = offsets
         wire["history"].append(
@@ -249,6 +281,9 @@ def execution_outcomes(review):
     for entry in review.history:
         if entry.get("kind") == "execution":
             latest.update(entry.get("outcomes", {}))
+        elif entry.get("kind") == "refresh":
+            for tid in entry.get("invalidated", []):
+                latest.pop(tid, None)
     return latest
 
 
@@ -339,6 +374,9 @@ def render_review(directory, output):
             ]
             parts.append("<tr>" + "".join("<td>" + esc(v) + "</td>" for v in values) + "</tr>")
         parts.append("</table></article>")
+        for evidence in review.history:
+            if evidence.get("kind") == "evidence" and evidence.get("finding_id") == f.id:
+                parts.append("<p>Evidence: " + esc(evidence.get("note", "")) + "</p>")
     parts.append("</body></html>")
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)

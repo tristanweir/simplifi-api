@@ -15,8 +15,14 @@ No private account evidence belongs in this document.
   `simplifi-review`. See [transaction reviews](transaction-reviews.md).
 - Generic Transfer classification on eligible existing cash-flow records, with
   explicit incoming/outgoing direction: `update_transfer_classification`. This
-  does not create a linked counterpart or move funds.
+  accepts categories, generic Transfer, and the observed `UNCATEGORIZED/0` state;
+  it preserves exclusion flags and does not create a linked counterpart or move funds.
 - Rule previews, updates and deletions, including encrypted resumable change plans.
+- Generic Transfer direction and transaction Reports/Spending Plan exclusions in
+  typed resumable transaction plans; flags can be combined with category or
+  Transfer classification. Only eligible unlinked cash-flow records are supported.
+- Finding lookup by number, unresolved lists, local confirmations/evidence notes,
+  selected-record refresh, and verified typed receipt import through `simplifi-review`.
 
 ## Missing client operations
 
@@ -57,6 +63,23 @@ originals for both sides. Review the counterpart's resulting classification;
 do not silently delete or reclassify it. Verify both links are removed and both
 records' financial details preserved. Include tests for bank-imported and merged
 pending/cleared records and automatic exclusion-flag changes.
+
+Observed UI expense reclassification cleared both exclusion flags on the outgoing
+record and its unlinked deposit counterpart. An excluded destination account did
+not preserve the deposit's transaction flags. Restore explicitly requested deposit
+exclusions and verify both sides; preserve amounts, dates and note contents.
+The UI also normalized absent notes from null to an empty string.
+
+### Extend exclusion edits to additional record types
+
+Implemented for eligible unlinked, unsplit cash-flow records through typed plans
+and `update_transaction_fields`. Ordinary category edits still preserve flags unless
+changes are explicitly requested. Account defaults are never edited. Split,
+investment and linked-transfer flag edits remain unsupported. Tests use synthetic
+responses; the new plan integration has not been exercised against live data.
+The UI may clear a disabled flag by omitting it from the API response rather than
+returning literal false. Verify its effective boolean state and the UI checkbox;
+an unrelated account default must not be changed to edit a single transaction.
 
 ### Remove an incorrect recurring-series association
 

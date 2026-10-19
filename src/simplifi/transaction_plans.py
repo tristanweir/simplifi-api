@@ -1,14 +1,35 @@
-"""Typed, explicitly approved category plans and conservative resumable execution."""
+"""Typed, explicitly approved transaction plans and conservative resumable execution."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from simplifi.category_update import category_payload, update_category, verify_correction
+from simplifi.category_update import (
+    EXCLUSION_FIELDS,
+    edit_fields,
+    field_matches,
+    transaction_edit_payload,
+    update_category,
+    update_transaction_fields,
+    update_transfer_classification,
+    verify_correction,
+)
 from simplifi.errors import ReadOnlyViolation, SimplifiError
 from simplifi.journal_store import JournalStore
-from simplifi.review_models import Review, TransactionOperation, TransactionPlan
-from simplifi.reviews import load_review, now, replace_encrypted, resolve_category
+from simplifi.review_models import (
+    Decision,
+    Review,
+    TransactionOperation,
+    TransactionPlan,
+    TransactionReceipt,
+)
+from simplifi.reviews import (
+    load_review,
+    now,
+    replace_encrypted,
+    resolve_category,
+    supersede_decisions,
+)
 from simplifi.rule_plan_models import OperationState
 from simplifi.transaction_rules import digest, load_encrypted, save_encrypted
 
@@ -30,21 +51,27 @@ def prepare_transaction_plan(client, review_dir, *, plan_path, decision_ids=None
     categories = client.categories()
     requests = {}
     for d in selected:
-        if d.action not in {"category", "confirm"}:
+        if d.action not in {"category", "transfer", "exclusions", "confirm"}:
             continue
         for old_id in d.transaction_ids:
             tid = review.replacements.get(old_id, old_id)
             category_id = d.exceptions.get(old_id, d.category_id)
             target = resolve_category(categories, category_id=category_id) if category_id else None
+            request = {
+                "action": d.action,
+                "category": target,
+                "incoming": d.incoming,
+                "exclusions": d.exclusions,
+            }
             previous = requests.get(tid)
-            if previous and (previous["action"], previous["category"]) != (d.action, target):
+            if previous and any(previous[k] != v for k, v in request.items()):
                 raise ReadOnlyViolation("Conflicting decisions for an overlapping transaction")
             if previous:
                 previous["decision_ids"].append(d.id)
             else:
-                requests[tid] = {"action": d.action, "category": target, "decision_ids": [d.id]}
+                requests[tid] = {**request, "decision_ids": [d.id]}
     if not requests:
-        raise ReadOnlyViolation("No category changes or confirmations selected")
+        raise ReadOnlyViolation("No transaction changes or confirmations selected")
     operations = []
     cached = {str(t["id"]): t for t in review.current.transactions}
     for tid, request in requests.items():
@@ -56,8 +83,13 @@ def prepare_transaction_plan(client, review_dir, *, plan_path, decision_ids=None
                 **request,
                 transaction_id=tid,
                 original=original,
-                payload=category_payload(original, request["category"])
-                if request["category"]
+                payload=transaction_edit_payload(
+                    original,
+                    category=request["category"],
+                    incoming=request["incoming"],
+                    exclusions=request["exclusions"],
+                )
+                if request["action"] != "confirm"
                 else None,
             )
         )
@@ -85,7 +117,23 @@ def inspect_transaction_plan(plan_path):
                 "before": op.original.get("coa"),
                 "after": op.payload["coa"] if op.payload else op.original.get("coa"),
                 "amount": op.original.get("amount"),
-                "already_correct": bool(op.payload and op.original.get("coa") == op.payload["coa"]),
+                "account_id": op.original.get("accountId"),
+                "payee": op.original.get("payee"),
+                "posted_on": op.original.get("postedOn"),
+                "after_amount": op.payload.get("amount")
+                if op.payload
+                else op.original.get("amount"),
+                "exclusions": {
+                    k: {"before": op.original.get(k, False), "after": v}
+                    for k, v in op.exclusions.items()
+                },
+                "before_exclusions": {
+                    k: op.original.get(k, False) for k in sorted(EXCLUSION_FIELDS)
+                },
+                "after_exclusions": {
+                    k: (op.payload or op.original).get(k, False) for k in sorted(EXCLUSION_FIELDS)
+                },
+                "already_correct": _already_correct(op),
             }
             for op in plan.operations
         ],
@@ -99,12 +147,20 @@ class TransactionJournal(JournalStore):
         _verify(operation, result)
 
 
+def _fields(op):
+    return edit_fields(category=op.category, incoming=op.incoming, exclusions=op.exclusions)
+
+
+def _already_correct(op):
+    return bool(op.payload) and all(field_matches(op.original, op.payload, k) for k in _fields(op))
+
+
 def _verify(op, current):
     if op.action == "confirm":
         if current != op.original:
             raise SimplifiError("Confirmed transaction changed")
     else:
-        verify_correction(op.original, op.payload, current, allowed_changes={"coa"})
+        verify_correction(op.original, op.payload, current, allowed_changes=_fields(op))
 
 
 def _reconcile(client, plan, state, journal):
@@ -153,7 +209,7 @@ def _project(review_dir, plan, state, confirmation):
         for op in plan.operations:
             if op.action == "confirm":
                 outcome = "confirmed"
-            elif op.original.get("coa") == op.payload["coa"]:
+            elif _already_correct(op):
                 outcome = "already_correct"
             else:
                 outcome = "changed"
@@ -200,11 +256,27 @@ def execute_transaction_plan(client, plan_path, *, confirmation, journal_dir, re
                 continue
             journal.save_backup(index, op, confirmation)
             state = journal.checkpoint(state.replace_step(index, OperationState.DISPATCHED))
-            if op.action == "category":
+            if op.action == "category" and not op.exclusions:
                 update_category(
                     client,
                     op.original,
                     op.category,
+                    backup_path=Path(journal_dir) / f"write-{index:08d}.dpapi",
+                )
+            elif op.action == "transfer" and not op.exclusions:
+                update_transfer_classification(
+                    client,
+                    op.original,
+                    incoming=op.incoming,
+                    backup_path=Path(journal_dir) / f"write-{index:08d}.dpapi",
+                )
+            elif op.action != "confirm":
+                update_transaction_fields(
+                    client,
+                    op.original,
+                    category=op.category,
+                    incoming=op.incoming,
+                    exclusions=op.exclusions,
                     backup_path=Path(journal_dir) / f"write-{index:08d}.dpapi",
                 )
             state = _reconcile(client, plan, state, journal)
@@ -214,3 +286,98 @@ def execute_transaction_plan(client, plan_path, *, confirmation, journal_dir, re
 
 def transaction_plan_status(journal_dir):
     return TransactionJournal(journal_dir).status()
+
+
+def inspect_transaction_receipt(receipt_path):
+    receipt = TransactionReceipt.model_validate(load_encrypted(Path(receipt_path)))
+    _verify(receipt.operation, receipt.result)
+    return {
+        "confirmation": digest(receipt.to_wire()),
+        "dataset_id": receipt.dataset_id,
+        "review_id": receipt.review_id,
+        "operation": receipt.operation.to_wire(),
+        "verified_at": receipt.verified_at,
+        "result": receipt.result,
+    }
+
+
+def import_transaction_receipt(client, review_dir, receipt_path, *, confirmation, finding_number):
+    """Validate a typed receipt against current live reads; never send a write."""
+    receipt = TransactionReceipt.model_validate(load_encrypted(Path(receipt_path)))
+    if digest(receipt.to_wire()) != confirmation or receipt.dataset_id != client.dataset_id:
+        raise ReadOnlyViolation("Receipt confirmation or dataset differs")
+    op = receipt.operation
+    _verify(op, receipt.result)
+    with JournalStore(Path(review_dir) / "execution").locked(), JournalStore(review_dir).locked():
+        review = load_review(review_dir)
+        if receipt.review_id != review.id or receipt.dataset_id != review.current.dataset_id:
+            raise ReadOnlyViolation("Receipt belongs to a different review")
+        findings = [f for f in review.findings if f.number == finding_number]
+        if len(findings) != 1:
+            raise SimplifiError("Unknown finding number")
+        f = findings[0]
+        ids = [
+            tid
+            for tid in f.transaction_ids
+            if review.replacements.get(tid, tid) == op.transaction_id
+        ]
+        if len(ids) != 1:
+            raise ReadOnlyViolation("Receipt transaction does not belong to finding")
+        current = client.transaction(op.transaction_id)
+        if current != receipt.result:
+            raise SimplifiError("Live record differs from receipt; investigate before importing")
+        if any(h.get("receipt_digest") == confirmation for h in review.history):
+            return {"imported": False, "already_imported": True}
+        cached = next(
+            (t for t in review.current.transactions if str(t["id"]) == op.transaction_id), None
+        )
+        if cached != op.original:
+            raise SimplifiError("Receipt original differs from review evidence")
+        wire = review.to_wire()
+        wire["current"]["transactions"] = [
+            current if str(t["id"]) == op.transaction_id else t for t in review.current.transactions
+        ]
+        if op.category:
+            wire["current"]["categories"] = [
+                c for c in review.current.categories if str(c["id"]) != str(op.category["id"])
+            ] + [op.category]
+        confirmation_decision = Decision(
+            id="receipt-" + confirmation,
+            finding_id=f.id,
+            transaction_ids=ids,
+            action="confirm",
+            note="Scoped receipt verified against live API read; no write performed by import.",
+        )
+        wire["decisions"] = [
+            d.to_wire() for d in supersede_decisions(review.decisions, [confirmation_decision])
+        ]
+        outcome = (
+            "confirmed"
+            if op.action == "confirm"
+            else ("already_correct" if _already_correct(op) else "changed")
+        )
+        wire["history"].append(
+            {
+                "kind": "execution",
+                "receipt_digest": confirmation,
+                "verified_at": now(),
+                "receipt": receipt.to_wire(),
+                "outcomes": {op.transaction_id: outcome},
+                "results": {op.transaction_id: current},
+            }
+        )
+        issues = wire["context"].get("import_issues", [])
+        resolved = [
+            i
+            for i in issues
+            if i.get("finding") == finding_number and i.get("transaction_id") == ids[0]
+        ]
+        wire["context"]["import_issues"] = [i for i in issues if i not in resolved]
+        wire["context"].setdefault("resolved_import_issues", []).extend(
+            [
+                {**i, "resolution": "Verified typed receipt", "receipt_digest": confirmation}
+                for i in resolved
+            ]
+        )
+        replace_encrypted(Path(review_dir) / "review.dpapi", Review.model_validate(wire).to_wire())
+    return {"imported": True, "transaction_id": op.transaction_id}

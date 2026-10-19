@@ -129,6 +129,7 @@ def transfer_classification_payload(original, *, incoming):
         or not (
             original.get("coa", {}).get("type") == "CATEGORY"
             or original.get("coa") == {"type": "BALANCE_ADJUSTMENT", "id": "2"}
+            or original.get("coa") == {"type": "UNCATEGORIZED", "id": "0"}
         )
     ):
         raise ReadOnlyViolation("Only unlinked, unsplit cash-flow classifications are supported")
@@ -182,8 +183,84 @@ def update_category(client, original, category, *, backup_path: Path):
     )
 
 
+EXCLUSION_FIELDS = frozenset({"isExcludedFromReports", "isExcludedFromF2S"})
+
+
+def transaction_edit_payload(original, *, category=None, incoming=None, exclusions=None):
+    """Compose only explicitly selected classification and transaction flag edits."""
+    exclusions = {} if exclusions is None else exclusions
+    if not isinstance(exclusions, dict) or not exclusions.keys() <= EXCLUSION_FIELDS:
+        raise ReadOnlyViolation("Unsupported exclusion fields")
+    if any(type(value) is not bool for value in exclusions.values()):
+        raise ReadOnlyViolation("Exclusions require explicit booleans")
+    if category is not None and incoming is not None:
+        raise ReadOnlyViolation("Select a category or Transfer, not both")
+    if incoming is not None:
+        payload = transfer_classification_payload(original, incoming=incoming)
+    elif category is not None:
+        payload = category_payload(original, category)
+    else:
+        if not exclusions:
+            raise ReadOnlyViolation("No transaction changes selected")
+        # Flag-only edits share the same unlinked cash-flow boundary, including $0.
+        coa = original.get("coa", {})
+        if (
+            original.get("type") != "CASH_FLOW"
+            or original.get("split")
+            or original.get("transfer")
+            or original.get("isDeleted")
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", str(original.get("id", "")))
+            or not (
+                coa.get("type") == "CATEGORY"
+                or coa
+                in ({"type": "UNCATEGORIZED", "id": "0"}, {"type": "BALANCE_ADJUSTMENT", "id": "2"})
+            )
+        ):
+            raise ReadOnlyViolation("Only unlinked, unsplit cash-flow flag edits are supported")
+        payload = {k: copy.deepcopy(v) for k, v in original.items() if k in _FIELDS}
+        payload["type"] = "CASH_FLOW"
+    payload.update(exclusions)
+    return payload
+
+
+def edit_fields(*, category=None, incoming=None, exclusions=None):
+    return (
+        ({"coa"} if category is not None else set())
+        | ({"coa", "amount"} if incoming is not None else set())
+        | set(exclusions or {})
+    )
+
+
+def update_transaction_fields(
+    client, original, *, category=None, incoming=None, exclusions=None, backup_path: Path
+):
+    current = client.transaction(original["id"])
+    if current != original:
+        raise SimplifiError("Transaction changed since selection; read it again before updating")
+    payload = transaction_edit_payload(
+        current, category=category, incoming=incoming, exclusions=exclusions
+    )
+    return _execute_correction(
+        client,
+        current,
+        payload,
+        backup_path=backup_path,
+        backup={"dataset_id": client.dataset_id, "original": current, "payload": payload},
+        session=_SinglePayloadSession(current, payload),
+        allowed_changes=edit_fields(category=category, incoming=incoming, exclusions=exclusions),
+    )
+
+
+def field_matches(record, payload, key):
+    # Observed flag-off responses omit the field. Never normalize non-boolean data.
+    if key in EXCLUSION_FIELDS:
+        value = record.get(key, False)
+        return type(value) is bool and value == payload[key]
+    return record.get(key) == payload.get(key)
+
+
 def _execute_correction(client, current, payload, *, backup_path, backup, session, allowed_changes):
-    if all(current.get(key) == payload.get(key) for key in allowed_changes):
+    if all(field_matches(current, payload, key) for key in allowed_changes):
         session.close()
         return current
     if backup_path.suffix != ".dpapi":
@@ -216,7 +293,7 @@ def _execute_correction(client, current, payload, *, backup_path, backup, sessio
 
 def verify_correction(current, payload, verified, *, allowed_changes):
     """Validate a read-back, including reconciliation after uncertain dispatch."""
-    if any(verified.get(key) != payload.get(key) for key in allowed_changes):
+    if any(not field_matches(verified, payload, key) for key in allowed_changes):
         raise SimplifiError("Category update was sent but the read-back category did not match")
     changes = {key for key in set(current) | set(verified) if current.get(key) != verified.get(key)}
     unexpected = changes - (allowed_changes | {"modifiedAt", "dbVersion", "userModifiedAt"})

@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, StrictBool, model_serializer, model_validator
 
-from simplifi.category_update import category_payload
+from simplifi.category_update import transaction_edit_payload
 from simplifi.rule_plan_models import StrictModel
 
 Record = dict[str, Any]
@@ -46,8 +46,12 @@ class Decision(StrictModel):
     id: str = Field(min_length=1)
     finding_id: str
     transaction_ids: list[str] = Field(min_length=1)
-    action: Literal["category", "confirm", "dismiss", "unresolved"]
+    action: Literal["category", "transfer", "exclusions", "confirm", "dismiss", "unresolved"]
     category_id: str | None = None
+    incoming: StrictBool | None = None
+    exclusions: dict[Literal["isExcludedFromReports", "isExcludedFromF2S"], StrictBool] = Field(
+        default_factory=dict
+    )
     note: str = ""
     # Per-transaction exceptions are resolved to explicit IDs, never payee patterns.
     exceptions: dict[str, str] = Field(default_factory=dict)
@@ -66,7 +70,23 @@ class Decision(StrictModel):
             raise ValueError("Category decision requires a category ID")
         if self.action != "category" and (self.category_id or self.exceptions or self.offsets):
             raise ValueError("Only category decisions accept targets")
+        if (self.action == "transfer") != (self.incoming is not None):
+            raise ValueError("Transfer requires an explicit direction")
+        if self.action == "exclusions" and not self.exclusions:
+            raise ValueError("Exclusions action requires explicit flags")
+        if self.action in {"confirm", "dismiss", "unresolved"} and self.exclusions:
+            raise ValueError("Local dispositions cannot edit exclusions")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        wire = handler(self)
+        # Retain canonical v1 bytes/digests for previously saved plans and journals.
+        if self.incoming is None:
+            wire.pop("incoming")
+        if not self.exclusions:
+            wire.pop("exclusions")
+        return wire
 
 
 class Review(StrictModel):
@@ -109,23 +129,54 @@ class Review(StrictModel):
 
 
 class TransactionOperation(StrictModel):
-    action: Literal["category", "confirm"]
+    action: Literal["category", "transfer", "exclusions", "confirm"]
     transaction_id: str
     original: Record
     category: Record | None = None
     payload: Record | None = None
     decision_ids: list[str]
+    incoming: StrictBool | None = None
+    exclusions: dict[Literal["isExcludedFromReports", "isExcludedFromF2S"], StrictBool] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def bound_payload(self):
         if str(self.original.get("id")) != self.transaction_id:
             raise ValueError("Original ID differs")
-        if self.action == "category":
-            if not self.category or category_payload(self.original, self.category) != self.payload:
-                raise ValueError("Payload differs from selected category")
-        elif self.category is not None or self.payload is not None:
-            raise ValueError("Confirmation cannot mutate a transaction")
+        if self.action == "confirm":
+            if (
+                self.category is not None
+                or self.payload is not None
+                or self.incoming is not None
+                or self.exclusions
+            ):
+                raise ValueError("Confirmation cannot mutate a transaction")
+            return self
+        if (self.action == "category") != (self.category is not None):
+            raise ValueError("Category action requires exactly one category")
+        if (self.action == "transfer") != (self.incoming is not None):
+            raise ValueError("Transfer action requires a direction")
+        if (
+            transaction_edit_payload(
+                self.original,
+                category=self.category,
+                incoming=self.incoming,
+                exclusions=self.exclusions,
+            )
+            != self.payload
+        ):
+            raise ValueError("Payload differs from selected changes")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        wire = handler(self)
+        if self.incoming is None:
+            wire.pop("incoming")
+        if not self.exclusions:
+            wire.pop("exclusions")
+        return wire
 
 
 class TransactionPlan(StrictModel):
@@ -142,3 +193,15 @@ class TransactionPlan(StrictModel):
         if len(ids) != len(set(ids)):
             raise ValueError("Duplicate planned transaction")
         return self
+
+
+class TransactionReceipt(StrictModel):
+    """Explicit receipt format for a separately scoped, verified operation."""
+
+    version: Literal[1] = 1
+    kind: Literal["transaction-receipt"] = "transaction-receipt"
+    dataset_id: str = Field(min_length=1)
+    review_id: str = Field(min_length=1)
+    verified_at: str = Field(min_length=1)
+    operation: TransactionOperation
+    result: Record

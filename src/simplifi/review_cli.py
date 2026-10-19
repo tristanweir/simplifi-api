@@ -9,6 +9,13 @@ from pathlib import Path
 from simplifi.client import Client
 from simplifi.errors import SimplifiError
 from simplifi.review_import import build_legacy_import, import_legacy_review
+from simplifi.review_management import (
+    attach_evidence,
+    confirm_records,
+    refresh_transactions,
+    show_finding,
+    unresolved_findings,
+)
 from simplifi.reviews import (
     download_review,
     load_review,
@@ -19,7 +26,9 @@ from simplifi.reviews import (
 )
 from simplifi.transaction_plans import (
     execute_transaction_plan,
+    import_transaction_receipt,
     inspect_transaction_plan,
+    inspect_transaction_receipt,
     prepare_transaction_plan,
     transaction_plan_status,
 )
@@ -37,6 +46,29 @@ def main(argv=None):
     download.add_argument("--end", type=date.fromisoformat, required=True)
     commands.add_parser("summary", parents=[review_args])
     commands.add_parser("inventory", parents=[review_args])
+    show = commands.add_parser("show", parents=[review_args])
+    show.add_argument("--number", type=int, required=True)
+    commands.add_parser("unresolved", parents=[review_args])
+    refresh = commands.add_parser("refresh", parents=[review_args])
+    refresh.add_argument("--transaction-id", action="append", required=True)
+    for name in ("confirm", "evidence"):
+        cmd = commands.add_parser(name, parents=[review_args])
+        cmd.add_argument("--number", type=int, required=True)
+        cmd.add_argument("--transaction-id", action="append", required=True)
+        cmd.add_argument(
+            "--note-stdin",
+            action="store_true",
+            required=True,
+            help="Read private explanation from stdin",
+        )
+        if name == "confirm":
+            cmd.add_argument("--decision-id")
+    receipt_inspect = commands.add_parser("receipt-inspect")
+    receipt_inspect.add_argument("--receipt", type=Path, required=True)
+    receipt_import = commands.add_parser("receipt-import", parents=[review_args])
+    receipt_import.add_argument("--receipt", type=Path, required=True)
+    receipt_import.add_argument("--confirm", required=True)
+    receipt_import.add_argument("--number", type=int, required=True)
     decide = commands.add_parser("decide", parents=[review_args])
     selection = decide.add_mutually_exclusive_group(required=True)
     selection.add_argument("--decisions", type=Path)
@@ -84,6 +116,24 @@ def main(argv=None):
             result = inspect_transaction_plan(args.plan)
         elif args.command == "status":
             result = transaction_plan_status(args.journal)
+        elif args.command == "show":
+            result = show_finding(args.review, args.number)
+        elif args.command == "unresolved":
+            result = unresolved_findings(args.review)
+        elif args.command == "confirm":
+            result = confirm_records(
+                args.review,
+                args.number,
+                args.transaction_id,
+                note=sys.stdin.read(),
+                decision_id=args.decision_id,
+            )
+        elif args.command == "evidence":
+            result = attach_evidence(
+                args.review, args.number, args.transaction_id, note=sys.stdin.read()
+            )
+        elif args.command == "receipt-inspect":
+            result = inspect_transaction_receipt(args.receipt)
         elif args.command == "summary":
             result = review_summary(load_review(args.review))
         elif args.command == "inventory":
@@ -125,6 +175,16 @@ def main(argv=None):
             elif args.command == "plan":
                 result = prepare_transaction_plan(
                     client, args.review, plan_path=args.plan, decision_ids=args.decision_id
+                )
+            elif args.command == "refresh":
+                result = refresh_transactions(client, args.review, args.transaction_id)
+            elif args.command == "receipt-import":
+                result = import_transaction_receipt(
+                    client,
+                    args.review,
+                    args.receipt,
+                    confirmation=args.confirm,
+                    finding_number=args.number,
                 )
             else:
                 result = execute_transaction_plan(

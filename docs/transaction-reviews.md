@@ -1,7 +1,8 @@
 # Transaction reviews
 
 Use `simplifi-review` (or `python -m simplifi.review_cli`) after browser login.
-Only `execute` changes live transactions. Rules, transfer links and recurring
+Only `execute` changes live transactions. Transfer classification and transaction
+exclusions are supported; rules, transfer links and recurring
 associations require separate operations.
 
 ## Start a review
@@ -119,3 +120,80 @@ Library entry points are `prepare_transaction_plan`, `inspect_transaction_plan`,
 `simplifi.reviews`; versioned models are in `simplifi.review_models`.
 
 See [API gaps](api-gaps.md) for unsupported operations.
+
+## Transfer direction and exclusions
+
+Use `action: "transfer"` with explicit `incoming: true` or `false` to classify an
+existing eligible cash-flow record as generic Transfer. This preserves magnitude
+and sets the selected sign. It does not move money or link/create a counterpart.
+Add `exclusions` to a category or Transfer decision to change flags alongside its
+classification, or use `action: "exclusions"` for flags alone:
+
+```json
+[
+  {
+    "id": "journal-transfer",
+    "finding_id": "example-finding-id",
+    "transaction_ids": ["example-journal"],
+    "action": "transfer",
+    "incoming": true,
+    "exclusions": {"isExcludedFromReports": true, "isExcludedFromF2S": true},
+    "note": "Existing sale proceeds journaled between accounts"
+  }
+]
+```
+
+`isExcludedFromF2S` controls Spending Plan exclusion. Only explicit booleans are
+accepted. Unselected flags and account defaults remain unchanged. A disabled flag
+may be omitted in the response; verification accepts missing as false only for
+explicitly edited flags, and rejects numeric/string lookalikes. Inspection shows
+before/after amounts, classification and both flags. Overlapping decisions must
+agree; combine classification and flags into one decision for the same record.
+
+Transfer and flag-only edits additionally accept existing generic Transfer
+(`BALANCE_ADJUSTMENT/2`). Flag-only edits allow zero amounts; Transfer direction
+requires a finite nonzero amount. All edits reject split, investment, linked-transfer
+and deleted records. Use the same plan/inspect/execute/status commands for these
+operations. Old category plan wire formats and confirmation digests remain valid.
+
+## Manage a review
+
+```powershell
+simplifi-review show --review .local/review --number 7
+simplifi-review unresolved --review .local/review
+'Confirmed merchant purpose' | simplifi-review confirm --review .local/review --number 7 --transaction-id example-1 --note-stdin --decision-id confirmed-example
+'Matching journal evidence' | simplifi-review evidence --review .local/review --number 7 --transaction-id example-1 --note-stdin
+simplifi-review refresh --review .local/review --transaction-id example-1
+```
+
+`show` includes original/current values, decisions, import issues and attached
+evidence. `confirm` records a local disposition without authentication or changing
+the live reviewed flag. Use a confirmation plan when live verification is required.
+Evidence notes do not prove a write succeeded or resolve missing receipts.
+Explanations are read from stdin and saved inside the encrypted review; use
+synthetic examples in shell history rather than private notes.
+
+`refresh` performs selected API reads, never writes, preserving the original
+snapshot and finding numbers. Changed records return to unresolved, invalidate
+selected prepared decisions and current execution outcomes, and retain historical
+receipts. Reimbursement decisions depending on changed expenses are invalidated too.
+Resolve uncertain execution through its journal before refreshing or revising its
+decisions. Refresh does not infer replacement IDs from similar records. Rendering
+remains a separate explicit command.
+
+### Import a separate verified operation
+
+Use `receipt-inspect --receipt .local/receipt.dpapi`, then
+`receipt-import --review .local/review --receipt .local/receipt.dpapi --number 7 --confirm <receipt-digest>`.
+Import performs API reads only. It requires exact dataset/review identity, original
+evidence matching the cached record, a valid scoped payload, a verified result,
+and a matching live read. Reimporting an identical receipt is idempotent. A stale
+or conflicting receipt is rejected without updating the review.
+
+The encrypted input uses `simplifi.review_models.TransactionReceipt`: version 1,
+kind `transaction-receipt`, `dataset_id`, `review_id`, `verified_at`, a typed
+`TransactionOperation` in `operation`, and the complete read-back record in `result`.
+Use `save_encrypted` and `.to_wire()` to save it. Arbitrary legacy response shapes
+are not treated as verified receipts. Import records history, updates current state,
+confirms the selected finding entry, and resolves matching import issues for that
+entry. It never executes the operation contained in the receipt.

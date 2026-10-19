@@ -46,6 +46,7 @@ def test_direction_is_explicit_and_magnitude_preserved(amount, incoming, expecte
         {"amount": 0},
         {"amount": True},
         {"coa": {"type": "ACCOUNT", "id": "other"}},
+        {"coa": {"type": "UNCATEGORIZED", "id": "other"}},
         {"id": "../other"},
     ],
 )
@@ -92,3 +93,19 @@ def test_unexpected_amount_in_readback_stops(tmp_path):
             client, ORIGINAL, incoming=True, backup_path=tmp_path / "before.dpapi"
         )
     assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_uncategorized_outgoing_transfer_keeps_exclusions(tmp_path):
+    original = {**ORIGINAL, "coa": {"type": "UNCATEGORIZED", "id": "0"}}
+    expected = {**original, "amount": -123.45, "coa": {"type": "BALANCE_ADJUSTMENT", "id": "2"}}
+    client = Mock(dataset_id="dataset")
+    client.transaction.side_effect = [original, expected]
+    client.auth.ensure_access_token.return_value = "synthetic-token"
+    responses.put("https://services.quicken.com/transactions/rollover-1", json={})
+    result = update_transfer_classification(
+        client, original, incoming=False, backup_path=tmp_path / "original.dpapi"
+    )
+    assert result == expected
+    assert len(responses.calls) == 1
+    assert json.loads(responses.calls[0].request.body) == expected

@@ -134,9 +134,11 @@ field names, CLI commands, preview coverage, and backfill limitations.
 ## Transaction reviews
 
 `simplifi-review` downloads encrypted snapshots, records typed decisions, prepares
-exact category plans, and executes them with encrypted backups and resumable
+exact category, Transfer-direction and exclusion plans, and executes them with encrypted backups and resumable
 journals. It regenerates readable HTML on explicit request and imports legacy
-review evidence offline. Confirmations, exceptions, partial resolutions and
+review evidence offline. Finding lookup, unresolved lists, selected refresh and
+verified receipt imports support ongoing review without custom scripts.
+Confirmations, exceptions, partial resolutions and
 reimbursement offsets are recorded without creating rules or transfer links.
 See [transaction reviews](docs/transaction-reviews.md) for commands and safeguards.
 
