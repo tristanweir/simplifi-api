@@ -8,6 +8,7 @@ from pathlib import Path
 
 from simplifi.client import Client
 from simplifi.errors import SimplifiError
+from simplifi.reconciliation import reconcile_transaction
 from simplifi.relationship_plans import (
     execute_relationship_plan,
     inspect_relationship_plan,
@@ -21,6 +22,8 @@ from simplifi.review_management import (
     show_finding,
     unresolved_findings,
 )
+from simplifi.review_preferences import preferences_for
+from simplifi.review_sync import reanalyze_review, set_review_preferences, sync_review
 from simplifi.reviews import (
     download_review,
     load_review,
@@ -51,6 +54,18 @@ def main(argv=None):
     download.add_argument("--end", type=date.fromisoformat, required=True)
     commands.add_parser("summary", parents=[review_args])
     commands.add_parser("inventory", parents=[review_args])
+    reconcile = commands.add_parser("reconcile", parents=[review_args])
+    reconcile.add_argument("--transaction-id", required=True)
+    reconcile.add_argument("--days", type=int, default=7)
+    reconcile.add_argument("--max-hops", type=int, default=4)
+    commands.add_parser("preferences", parents=[review_args])
+    pref = commands.add_parser("preferences-set", parents=[review_args])
+    pref.add_argument("--stdin", action="store_true", required=True)
+    commands.add_parser("analyze", parents=[review_args])
+    sync = commands.add_parser("sync", parents=[review_args])
+    sync.add_argument(
+        "--modified-after", help="Optional server delta cursor; ISO timestamp with timezone"
+    )
     rel = commands.add_parser("relationship-plan", parents=[review_args])
     rel.add_argument("--action", choices=["link", "unlink", "unlink_recurring"], required=True)
     rel.add_argument("--transaction-id", action="append", required=True)
@@ -136,6 +151,19 @@ def main(argv=None):
             result = inspect_transaction_plan(args.plan)
         elif args.command == "status":
             result = transaction_plan_status(args.journal)
+        elif args.command == "reconcile":
+            result = reconcile_transaction(
+                load_review(args.review),
+                args.transaction_id,
+                days=args.days,
+                max_hops=args.max_hops,
+            )
+        elif args.command == "preferences":
+            result = preferences_for(load_review(args.review)).to_wire()
+        elif args.command == "preferences-set":
+            result = set_review_preferences(args.review, json.load(sys.stdin))
+        elif args.command == "analyze":
+            result = reanalyze_review(args.review)
         elif args.command == "relationship-inspect":
             result = inspect_relationship_plan(args.plan)
         elif args.command == "show":
@@ -217,6 +245,8 @@ def main(argv=None):
                 )
             elif args.command == "refresh":
                 result = refresh_transactions(client, args.review, args.transaction_id)
+            elif args.command == "sync":
+                result = sync_review(client, args.review, modified_after=args.modified_after)
             elif args.command == "receipt-import":
                 result = import_transaction_receipt(
                     client,

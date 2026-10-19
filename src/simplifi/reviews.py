@@ -199,33 +199,71 @@ def reimbursement_candidates(
     }
 
 
-def analyze(snapshot, *, existing=()):
-    """Deterministic candidates only; no merchant-specific category guesses."""
-    categories = {str(c["id"]): c["name"] for c in snapshot.categories}
+def analyze(snapshot, *, existing=(), preferences=None, resolved_ids=()):
+    """Candidates only, retaining prior IDs, numbers, evidence, and group members."""
+    from simplifi.reconciliation import investment_activity
+    from simplifi.review_preferences import ReviewPreferences, normalize
+
+    preferences = preferences or ReviewPreferences()
+    accounts = {str(a["id"]): a for a in snapshot.accounts}
     groups = defaultdict(list)
     for t in snapshot.transactions:
-        if ordinary(t):
-            groups[" ".join(transaction_payee(t).casefold().split())].append(t)
+        day = transaction_date(t)
+        if (
+            ordinary(t)
+            and not investment_activity(t, accounts)
+            and day
+            and snapshot.start.isoformat() <= day <= snapshot.end.isoformat()
+        ):
+            owner = preferences.account_owners.get(str(t.get("accountId")))
+            groups[(owner or "", preferences.payee(t))].append(t)
     findings = list(existing)
-    by_id = {f.id: f for f in findings}
+    indexes = {f.id: i for i, f in enumerate(findings)}
     number = max((f.number for f in findings), default=0)
-    for payee, rows in sorted(groups.items()):
+    aliases = {
+        normalize(k): [normalize(v) for v in values]
+        for k, values in preferences.statement_aliases.items()
+    }
+    for (owner, payee), rows in sorted(groups.items()):
         candidates = []
-        if len({category_name(t, categories) for t in rows}) > 1:
+        accepted = {
+            str(t["id"]) for t in rows if any(c.accepts(t) for c in preferences.conventions)
+        }
+        if len({digest(t.get("coa")) for t in rows}) > 1:
             candidates.append(
                 (
                     "mixed",
-                    rows,
+                    [t for t in rows if str(t["id"]) not in accepted],
                     "Same payee has different categories",
                     "Different purchases or reimbursements may justify this difference.",
                 )
             )
-        mismatched = [
+        outside_convention = [
             t
             for t in rows
-            if (t.get("cpData") or {}).get("payee")
-            and payee not in " ".join(str(t["cpData"]["payee"]).casefold().split())
+            if any(c.matches_scope(t) for c in preferences.conventions)
+            and str(t["id"]) not in accepted
         ]
+        if outside_convention:
+            candidates.append(
+                (
+                    "convention",
+                    outside_convention,
+                    "Assignment differs from a recorded analysis convention",
+                    "Review the explicit category and exclusion preferences; no change is automatic.",
+                )
+            )
+        mismatched = []
+        for t in rows:
+            statement = normalize((t.get("cpData") or {}).get("payee", ""))
+            actual_payee = normalize(transaction_payee(t))
+            if (
+                statement
+                and actual_payee not in statement
+                and payee not in statement
+                and not any(alias in statement for alias in aliases.get(payee, []))
+            ):
+                mismatched.append(t)
         if mismatched:
             candidates.append(
                 (
@@ -236,20 +274,32 @@ def analyze(snapshot, *, existing=()):
                 )
             )
         for kind, selected, title, rationale in candidates:
-            fid = digest([snapshot.dataset_id, kind, payee])
-            if fid in by_id:
-                continue  # Existing inventory and numbers remain stable.
+            fid = digest([snapshot.dataset_id, kind, payee] + ([owner] if owner else []))
+            ids = [str(t["id"]) for t in selected if str(t["id"]) not in resolved_ids]
+            if not ids:
+                continue
+            if fid in indexes:
+                previous = findings[indexes[fid]]
+                wire = previous.to_wire()
+                wire["transaction_ids"] = list(dict.fromkeys(previous.transaction_ids + ids))
+                findings[indexes[fid]] = Finding.model_validate(wire)
+                continue
             number += 1
             finding = Finding(
                 id=fid,
                 number=number,
                 title=title,
                 rationale=rationale,
-                transaction_ids=[str(t["id"]) for t in selected],
-                evidence={"analysis": kind, "payee": payee},
+                transaction_ids=ids,
+                evidence={
+                    "analysis": kind,
+                    "payee": payee,
+                    "owner": owner or None,
+                    "reference_transaction_ids": [str(t["id"]) for t in rows],
+                },
             )
+            indexes[fid] = len(findings)
             findings.append(finding)
-            by_id[fid] = finding
     return findings
 
 
@@ -270,6 +320,7 @@ def download_review(client, directory, *, start, end):
         end=end,
         transactions=transactions,
         categories=client.categories(),
+        accounts=client.accounts(),
     )
     review = Review(id=uuid4().hex, original=snapshot, current=snapshot, findings=analyze(snapshot))
     create_review(directory, review)
@@ -313,7 +364,8 @@ def review_summary(review):
         "confirmed": counts["confirm"],
         "dismissed": counts["dismiss"],
         "unresolved": unresolved,
-        "blocked": len(review.context.get("import_issues", [])),
+        "blocked": len(review.context.get("import_issues", []))
+        + len(review.context.get("sync_issues", [])),
     }
 
 
@@ -322,8 +374,14 @@ def render_review(directory, output):
         raise SimplifiError("Render output must be an HTML file")
     review = load_review(directory)
     categories = {str(c["id"]): c["name"] for c in review.current.categories}
-    original_categories = {str(c["id"]): c["name"] for c in review.original.categories}
-    original = {str(t["id"]): t for t in review.original.transactions}
+    original_categories = {
+        str(c["id"]): c["name"] for c in review.context.get("added_categories", {}).values()
+    }
+    original_categories.update({str(c["id"]): c["name"] for c in review.original.categories})
+    original = {
+        **review.context.get("added_originals", {}),
+        **{str(t["id"]): t for t in review.original.transactions},
+    }
     current = {str(t["id"]): t for t in review.current.transactions}
     decisions = {(d.finding_id, tid): d for d in review.decisions for tid in d.transaction_ids}
     outcomes = execution_outcomes(review)
@@ -362,7 +420,9 @@ def render_review(directory, output):
             issues = [
                 issue.get("reason", "")
                 for issue in review.context.get("import_issues", [])
-                if issue.get("transaction_id") == tid and issue.get("finding", f.number) == f.number
+                + review.context.get("sync_issues", [])
+                if issue.get("transaction_id") in {tid, mapped}
+                and issue.get("finding", f.number) == f.number
             ]
             note = " ".join(([d.note] if d else []) + issues)
             values = [

@@ -21,6 +21,14 @@ class Snapshot(StrictModel):
     end: date
     transactions: list[Record]
     categories: list[Record]
+    accounts: list[Record] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        wire = handler(self)
+        if not self.accounts:
+            wire.pop("accounts")
+        return wire
 
     @model_validator(mode="after")
     def valid_range(self):
@@ -29,6 +37,9 @@ class Snapshot(StrictModel):
         ids = [str(t["id"]) for t in self.transactions]
         if len(ids) != len(set(ids)):
             raise ValueError("Duplicate transaction identifiers")
+        account_ids = [str(a["id"]) for a in self.accounts]
+        if len(account_ids) != len(set(account_ids)):
+            raise ValueError("Duplicate account identifiers")
         return self
 
 
@@ -125,6 +136,14 @@ class Review(StrictModel):
                 raise ValueError("Duplicate review identifiers")
         findings = {f.id: f for f in self.findings}
         originals = {str(t["id"]) for t in self.original.transactions}
+        added = self.context.get("added_originals", {})
+        if not isinstance(added, dict) or any(
+            not isinstance(t, dict) or str(t.get("id")) != tid for tid, t in added.items()
+        ):
+            raise ValueError("Invalid first-seen transaction evidence")
+        if originals & added.keys():
+            raise ValueError("First-seen evidence cannot overwrite immutable originals")
+        originals |= added.keys()
         current = {str(t["id"]) for t in self.current.transactions}
         if any(a not in originals or b not in current for a, b in self.replacements.items()):
             raise ValueError("Replacement requires original and current evidence")
