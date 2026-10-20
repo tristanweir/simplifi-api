@@ -131,15 +131,15 @@ def prepare_rule_creation(client, changes, *, plan_path):
         raise ReadOnlyViolation("Resolve a dataset before creating a rule plan")
     payload = creation_payload(changes, client_id=uuid4().hex)
     baseline = _rules(client)
-    transaction_baseline = _transactions(client)
     if _duplicate(payload, baseline):
         raise ReadOnlyViolation("An existing rule has the same conditions; review it instead")
     categories = client.categories()
     account_ids = sorted(str(a["id"]) for a in client.accounts() if not a.get("isDeleted"))
     _validate_references(payload, categories, set(account_ids))
+    transaction_baseline = _transactions(client)
     preview = _preview(client, payload)
     if _rules(client) != baseline or _transactions(client) != transaction_baseline:
-        raise SimplifiError("Rules changed during preparation")
+        raise SimplifiError("Rules or transactions changed during preparation")
     plan = RuleCreationPlan(
         dataset_id=client.dataset_id,
         baseline=baseline,
@@ -251,7 +251,7 @@ def execute_rule_creation(client, path, *, confirmation, journal_dir):
                 _rules(client) != plan.baseline
                 or _transactions(client) != plan.transaction_baseline
             ):
-                raise SimplifiError("Rules changed immediately before creation")
+                raise SimplifiError("Rules or transactions changed immediately before creation")
             journal.save_backup(0, op, confirmation)
             state = journal.checkpoint(state.replace_step(0, OperationState.DISPATCHED))
             _request(client, "POST", "/transaction-rules", op.payload)

@@ -164,21 +164,28 @@ def prepare_relationship_plan(
     review = load_review(review_dir)
     if review.current.dataset_id != client.dataset_id:
         raise ReadOnlyViolation("Dataset differs from review")
-    if len(transaction_ids) != len(set(transaction_ids)) or not transaction_ids:
-        raise ReadOnlyViolation("Select unique transaction IDs")
+    if action not in {"link", "unlink", "unlink_recurring"}:
+        raise ReadOnlyViolation("Unknown relationship action")
+    count = 1 if action == "unlink_recurring" else 2
+    if len(transaction_ids) != count or len(transaction_ids) != len(set(transaction_ids)):
+        raise ReadOnlyViolation("Select one recurring record or two unique transfer records")
+    targets = {} if targets is None else targets
+    if not isinstance(targets, dict):
+        raise ReadOnlyViolation("Targets must map transaction IDs to explicit classifications")
+    cached = {str(t["id"]): t for t in review.current.transactions}
+    if not set(transaction_ids) <= cached.keys():
+        raise ReadOnlyViolation("Refresh selected records into the review first")
     baseline = _records(client.transactions())
     if not set(transaction_ids) <= baseline.keys():
         raise ReadOnlyViolation("Selected transaction missing from API snapshot")
-    cached_ids = {str(t["id"]) for t in review.current.transactions}
-    if not set(transaction_ids) <= cached_ids:
-        raise ReadOnlyViolation("Refresh selected records into the review first")
     originals = [client.transaction(tid) for tid in transaction_ids]
-    cached = {str(t["id"]): t for t in review.current.transactions}
+    if any(str(t.get("id")) != tid for tid, t in zip(transaction_ids, originals)):
+        raise SimplifiError("Transaction lookup returned a different ID")
     if any(cached.get(str(t["id"])) != t for t in originals):
         raise SimplifiError("Selected review evidence is stale; refresh and review before planning")
-    payloads = _payloads(action, originals, targets or {})
+    payloads = _payloads(action, originals, targets)
     categories = client.categories()
-    for coa in (targets or {}).values():
+    for coa in targets.values():
         if coa.get("type") == "CATEGORY":
             resolve_category(categories, category_id=str(coa["id"]))
     all_accounts = _records(client.accounts())
@@ -202,7 +209,7 @@ def prepare_relationship_plan(
         categories=categories,
         operations=[
             RelationshipOperation(
-                action=action, originals=originals, targets=targets or {}, payloads=payloads
+                action=action, originals=originals, targets=targets, payloads=payloads
             )
         ],
     )

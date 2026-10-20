@@ -45,14 +45,23 @@ def prepare_transaction_plan(client, review_dir, *, plan_path, decision_ids=None
     review = load_review(review_dir)
     if not client.dataset_id or review.current.dataset_id != client.dataset_id:
         raise ReadOnlyViolation("Dataset differs from review")
-    selected = [d for d in review.decisions if decision_ids is None or d.id in decision_ids]
-    if decision_ids is not None and set(decision_ids) != {d.id for d in selected}:
-        raise ReadOnlyViolation("Unknown decision selection")
+    actions = {"category", "transfer", "exclusions", "text", "confirm"}
+    selected = [
+        d
+        for d in review.decisions
+        if d.action in actions and (decision_ids is None or d.id in decision_ids)
+    ]
+    if decision_ids is not None and (
+        not decision_ids
+        or len(decision_ids) != len(set(decision_ids))
+        or set(decision_ids) != {d.id for d in selected}
+    ):
+        raise ReadOnlyViolation("Select unique executable decisions")
+    if not selected:
+        raise ReadOnlyViolation("No transaction changes or confirmations selected")
     categories = client.categories()
     requests = {}
     for d in selected:
-        if d.action not in {"category", "transfer", "exclusions", "text", "confirm"}:
-            continue
         for old_id in d.transaction_ids:
             tid = review.replacements.get(old_id, old_id)
             category_id = d.exceptions.get(old_id, d.category_id)
@@ -71,8 +80,6 @@ def prepare_transaction_plan(client, review_dir, *, plan_path, decision_ids=None
                 previous["decision_ids"].append(d.id)
             else:
                 requests[tid] = {**request, "decision_ids": [d.id]}
-    if not requests:
-        raise ReadOnlyViolation("No transaction changes or confirmations selected")
     operations = []
     cached = {str(t["id"]): t for t in review.current.transactions}
     for tid, request in requests.items():

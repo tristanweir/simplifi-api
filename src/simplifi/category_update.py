@@ -321,7 +321,7 @@ def _execute_correction(client, current, payload, *, backup_path, backup, sessio
 def verify_correction(current, payload, verified, *, allowed_changes):
     """Validate a read-back, including reconciliation after uncertain dispatch."""
     if any(not field_matches(verified, payload, key) for key in allowed_changes):
-        raise SimplifiError("Category update was sent but the read-back category did not match")
+        raise SimplifiError("Transaction read-back differs from the approved changes")
     changes = {key for key in set(current) | set(verified) if current.get(key) != verified.get(key)}
     unexpected = changes - (allowed_changes | {"modifiedAt", "dbVersion", "userModifiedAt"})
     # Observed server normalization after a user edits a bank-pending transaction.
@@ -336,5 +336,5 @@ def verify_correction(current, payload, verified, *, allowed_changes):
             unexpected.discard("cpData")
     if unexpected:
         raise SimplifiError(
-            "Category updated, but other fields changed during verification; inspect before further edits"
+            "Unapproved transaction fields changed during verification; inspect before further edits"
         )

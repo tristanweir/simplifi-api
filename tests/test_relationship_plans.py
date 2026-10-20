@@ -409,3 +409,42 @@ def test_relationship_inspect_cli_stays_offline(tmp_path, monkeypatch):
     monkeypatch.setattr("simplifi.review_cli.Client", forbidden)
     main(["relationship-inspect", "--plan", str(path)])
     forbidden.assert_not_called()
+
+
+def test_recurring_plan_rejects_a_lookup_for_another_cached_record(tmp_path):
+    directory, client, store = setup_review(tmp_path, recurring=True)
+    store["t2"] = {**copy.deepcopy(store["t1"]), "id": "t2"}
+    wire = load_review(directory).to_wire()
+    wire["current"]["transactions"] = list(store.values())
+    replace_encrypted(directory / "review.dpapi", wire)
+    client.transaction.side_effect = lambda tid: copy.deepcopy(store["t2"])
+    with pytest.raises(SimplifiError, match="different ID"):
+        prepare(directory, client, tmp_path, "unlink_recurring")
+    assert not (tmp_path / "relationship.dpapi").exists()
+    client.scheduled_transactions.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "action,ids,targets",
+    [
+        ("unknown", ["t1", "t2"], None),
+        ("link", ["t1"], None),
+        ("unlink_recurring", ["t1", "t2"], None),
+        ("link", ["t1", "t1"], None),
+        ("link", ["t1", "missing"], None),
+        ("link", ["t1", "t2"], []),
+    ],
+)
+def test_bad_relationship_selection_does_not_download_history(tmp_path, action, ids, targets):
+    directory, client, _ = setup_review(tmp_path)
+    with pytest.raises(ReadOnlyViolation):
+        prepare_relationship_plan(
+            client,
+            directory,
+            action=action,
+            transaction_ids=ids,
+            targets=targets,
+            plan_path=tmp_path / "invalid.dpapi",
+        )
+    client.transactions.assert_not_called()
+    client.transaction.assert_not_called()

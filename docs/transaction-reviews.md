@@ -61,7 +61,10 @@ simplifi-review execute --review .local/review --plan .local/meal-plan.dpapi --c
 simplifi-review status --journal .local/meal-journal
 ```
 
-Omitting `--decision-id` selects all category and confirmation decisions. Plans
+Omitting `--decision-id` selects all executable decisions (category, transfer,
+exclusions, text and confirmation). Dismissed and unresolved dispositions stay
+local and do not bind the plan. Explicit selections must be unique executable
+decision IDs; unknown or non-executable selections are rejected. Plans
 bind the dataset, refreshed originals, exact payloads and decisions to the digest.
 Preparation and execution reject changed data; a confirmation also requires the
 live record to match the review snapshot.

@@ -106,6 +106,54 @@ def fake_writer(store, calls):
     return write
 
 
+def test_plan_ignores_unrelated_local_dispositions(setup, tmp_path, monkeypatch):
+    directory, client, store = setup
+    decide(directory, transaction_ids=["t1"])
+    local = {
+        "id": "local",
+        "finding_id": "f1",
+        "transaction_ids": ["t2"],
+        "action": "dismiss",
+        "note": "Checked separately",
+    }
+    record_decisions(directory, [local])
+    path, kwargs = prepare(directory, client, tmp_path)
+    assert [d["id"] for d in load_encrypted(path)["decisions"]] == ["d1"]
+    record_decisions(directory, [{**local, "note": "More context"}])
+    calls = []
+    monkeypatch.setattr("simplifi.transaction_plans.update_category", fake_writer(store, calls))
+    execute_transaction_plan(client, path, **kwargs)
+    assert calls == ["t1"]
+
+
+@pytest.mark.parametrize("ids", [[], ["d1", "d1"], ["d1", "missing"], ["d1", "local"]])
+def test_explicit_plan_selection_must_be_unique_and_executable(setup, tmp_path, ids):
+    directory, client, _ = setup
+    decide(directory, transaction_ids=["t1"])
+    record_decisions(
+        directory,
+        [{"id": "local", "finding_id": "f1", "transaction_ids": ["t2"], "action": "dismiss"}],
+    )
+    with pytest.raises(ReadOnlyViolation, match="executable decisions"):
+        prepare_transaction_plan(
+            client, directory, plan_path=tmp_path / "bad.dpapi", decision_ids=ids
+        )
+    client.categories.assert_not_called()
+    client.transaction.assert_not_called()
+
+
+def test_local_dispositions_only_need_no_api_reads_for_a_plan(setup, tmp_path):
+    directory, client, _ = setup
+    record_decisions(
+        directory,
+        [{"id": "local", "finding_id": "f1", "transaction_ids": ["t2"], "action": "unresolved"}],
+    )
+    with pytest.raises(ReadOnlyViolation, match="No transaction changes"):
+        prepare_transaction_plan(client, directory, plan_path=tmp_path / "bad.dpapi")
+    client.categories.assert_not_called()
+    client.transaction.assert_not_called()
+
+
 def test_category_plan_resume_and_projection(setup, tmp_path, monkeypatch):
     directory, client, store = setup
     decide(directory, exceptions={"t2": "old"})

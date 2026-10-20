@@ -94,6 +94,15 @@ def test_future_only_creation_success_and_resume(setup):
     assert rules["created"]["clientId"] == posts[0][2]["clientId"]
 
 
+def test_duplicate_creation_is_rejected_before_transaction_snapshot(setup, tmp_path):
+    client, rules, _, _, _, _ = setup
+    rules["duplicate"] = {"id": "duplicate", **copy.deepcopy(CHANGES)}
+    client.transactions.reset_mock()
+    with pytest.raises(ReadOnlyViolation, match="same conditions"):
+        prepare_rule_creation(client, CHANGES, plan_path=tmp_path / "duplicate.dpapi")
+    client.transactions.assert_not_called()
+
+
 @pytest.mark.parametrize("succeeded", [True, False])
 def test_uncertain_creation_never_replayed(setup, monkeypatch, succeeded):
     client, _, calls, request, path, kw = setup
