@@ -92,10 +92,6 @@ class ReviewPreferences(StrictModel):
             raise ValueError("Statement aliases must not be blank")
         return self
 
-    def payee(self, transaction):
-        value = normalize(transaction_payee(transaction))
-        return {normalize(k): normalize(v) for k, v in self.payee_aliases.items()}.get(value, value)
-
 
 def preferences_for(review):
     return ReviewPreferences.model_validate(review.context.get("analysis_preferences", {}))

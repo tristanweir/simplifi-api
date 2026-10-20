@@ -376,3 +376,141 @@ def test_full_sync_validates_exact_lookup_before_persisting(setup, field, value)
     with pytest.raises(SimplifiError):
         sync_review(client, directory)
     assert (directory / "review.dpapi").read_bytes() == before
+
+
+def test_zero_reconciliation_uses_the_same_result_shape():
+    zero = reconcile_transaction(review([row("zero", 0)]), "zero")
+    ordinary = reconcile_transaction(review([row("cash")]), "cash")
+    assert zero.keys() == ordinary.keys()
+    assert zero["nodes"][0].keys() == ordinary["nodes"][0].keys()
+    assert zero["nodes"][0]["transaction"]["id"] == "zero"
+    assert zero["warnings"][0]["transaction_id"] == "zero"
+    assert not zero["edges"] and not zero["ambiguous"]
+
+
+@pytest.mark.parametrize("limits", [{"max_hops": True}, {"max_hops": 1.5}, {"max_paths": False}])
+def test_reconciliation_rejects_noninteger_limits(limits):
+    with pytest.raises(SimplifiError, match="Invalid trail limits"):
+        reconcile_transaction(review([row("cash")]), "cash", **limits)
+
+
+def test_reconciliation_flags_downstream_branching_and_depth_limit():
+    rows = [
+        row("anchor", account="a1"),
+        row("middle", account="wallet"),
+        row("choice-one", account="a2"),
+        row("choice-two", account="trust"),
+    ]
+    rows[0]["cpData"]["payee"] = "FIRST PAYMENT"
+    rows[1]["cpData"]["payee"] = "SECOND PAYMENT"
+    r = review(rows)
+    r.context["analysis_preferences"] = {
+        "payment_channels": [
+            {
+                "bank_account_ids": ["a1"],
+                "payment_account_id": "wallet",
+                "statement_contains": "FIRST",
+            },
+            {
+                "bank_account_ids": ["wallet"],
+                "payment_account_id": "a2",
+                "statement_contains": "SECOND",
+            },
+            {
+                "bank_account_ids": ["wallet"],
+                "payment_account_id": "trust",
+                "statement_contains": "SECOND",
+            },
+        ]
+    }
+    result = reconcile_transaction(r, "anchor", max_hops=1)
+    assert result["ambiguous"] and result["depth_limited"]
+    assert result["trails"] == [["anchor", "middle"]]
+    assert not result["trails_truncated"]
+
+
+def test_matching_link_references_with_wrong_signs_are_not_verified():
+    bank = row("bank", -10, "a1")
+    wallet = row("wallet", -10, "wallet")
+    for source, target in ((bank, wallet), (wallet, bank)):
+        source["transfer"] = {"id": target["id"]}
+        source["coa"] = {"type": "ACCOUNT", "id": target["accountId"]}
+    bank["cpData"]["payee"] = "WALLET PAYMENT"
+    r = review([bank, wallet])
+    r.context["analysis_preferences"] = {
+        "payment_channels": [
+            {
+                "bank_account_ids": ["a1"],
+                "payment_account_id": "wallet",
+                "statement_contains": "WALLET",
+            }
+        ]
+    }
+    result = reconcile_transaction(r, "bank")
+    assert result["edges"] and not any(e["verified_link"] for e in result["edges"])
+    assert len(result["warnings"]) == 2
+
+
+def test_reconciliation_needs_account_identity_for_candidates():
+    outgoing = row("out", -10)
+    incoming = row("in", 10, "a2")
+    outgoing.pop("accountId")
+    result = reconcile_transaction(review([outgoing, incoming]), "out")
+    assert not result["edges"]
+    assert [n["transaction"]["id"] for n in result["nodes"]] == ["out"]
+
+
+def test_conflicting_conventions_cannot_suppress_a_candidate():
+    snapshot = review([row("cash")]).current
+    pref = ReviewPreferences(
+        conventions=[
+            {
+                "id": "food",
+                "payee_contains": "Example",
+                "category_ids": ["food"],
+                "note": "General",
+            },
+            {
+                "id": "other",
+                "account_ids": ["a1"],
+                "category_ids": ["other"],
+                "note": "Account-specific",
+            },
+        ]
+    )
+    findings = analyze(snapshot, preferences=pref)
+    assert len(findings) == 1 and findings[0].evidence["analysis"] == "convention"
+    assert findings[0].transaction_ids == ["cash"]
+
+
+def test_full_sync_does_not_recheck_confirmed_tombstones(setup):
+    directory, client, store = setup
+    client.transactions.side_effect = lambda **kwargs: [{"id": "t1", "isDeleted": True}]
+    sync_review(client, directory, modified_after="2027-01-01T00:00:00Z")
+    client.transactions.side_effect = lambda **kwargs: [store["t2"]]
+    client.transaction.side_effect = AssertionError("Known tombstone needs no lookup")
+    result = sync_review(client, directory)
+    assert result["missing"] == 0
+    client.transaction.assert_not_called()
+
+
+def test_sync_history_records_only_changed_evidence(setup):
+    directory, client, store = setup
+    sync_review(client, directory)
+    refresh = [h for h in load_review(directory).history if h["kind"] == "refresh"][-1]
+    assert refresh["results"] == {} and refresh["refreshed_count"] == 2
+    store["t1"]["memo"] = "New evidence"
+    sync_review(client, directory)
+    r = load_review(directory)
+    refresh = [h for h in r.history if h["kind"] == "refresh"][-1]
+    assert refresh["results"] == {"t1": store["t1"]}
+    assert refresh["refreshed_count"] == 2
+    assert "memo" not in r.original.transactions[0]
+
+
+@pytest.mark.parametrize("cursor", [False, 17, "", "2027-01-01T00:00:00"])
+def test_bad_sync_cursor_fails_before_api_reads(setup, cursor):
+    directory, client, _ = setup
+    with pytest.raises(SimplifiError, match="Modified-after"):
+        sync_review(client, directory, modified_after=cursor)
+    client.transactions.assert_not_called()

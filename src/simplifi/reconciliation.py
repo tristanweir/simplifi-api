@@ -40,7 +40,12 @@ def investment_activity(transaction, accounts):
 def reconcile_transaction(review, transaction_id, *, days=7, max_hops=4, max_paths=50):
     if type(days) is not int or not 0 <= days <= 366:
         raise SimplifiError("Date window must be between 0 and 366 days")
-    if not 1 <= max_hops <= 10 or not 1 <= max_paths <= 1000:
+    if (
+        type(max_hops) is not int
+        or type(max_paths) is not int
+        or not 1 <= max_hops <= 10
+        or not 1 <= max_paths <= 1000
+    ):
         raise SimplifiError("Invalid trail limits")
     preferences = preferences_for(review)
     accounts = {str(a["id"]): a for a in review.current.accounts}
@@ -54,17 +59,13 @@ def reconcile_transaction(review, transaction_id, *, days=7, max_hops=4, max_pat
         when = date.fromisoformat(transaction_date(anchor))
     except (ValueError, TypeError, InvalidOperation):
         raise SimplifiError("Selected transaction needs a finite amount and valid date") from None
-    if magnitude == 0:
-        return {
-            "transaction_id": tid,
-            "nodes": [anchor],
-            "edges": [],
-            "trails": [],
-            "warnings": ["A zero amount cannot establish a cash transfer."],
-            "automatic_action": False,
-        }
-    selected, dates, amounts, warnings = {}, {}, {}, []
-    for key, row in rows.items():
+    selected, dates, amounts = {tid: anchor}, {tid: when}, {tid: amount(anchor)}
+    warnings = (
+        [{"transaction_id": tid, "reason": "A zero amount cannot establish a cash transfer."}]
+        if magnitude == 0
+        else []
+    )
+    for key, row in rows.items() if magnitude else ():
         try:
             value = amount(row)
             day = date.fromisoformat(transaction_date(row))
@@ -73,10 +74,12 @@ def reconcile_transaction(review, transaction_id, *, days=7, max_hops=4, max_pat
         if abs(value) == magnitude and abs((day - when).days) <= days:
             selected[key], dates[key], amounts[key] = row, day, value
     edges = []
-    seen = set()
-    for aid, a in sorted(selected.items()):
-        for bid, b in sorted(selected.items()):
-            if aid == bid or (aid, bid) in seen:
+    ordered = sorted(selected.items())
+    for aid, a in ordered:
+        for bid, b in ordered:
+            if aid == bid:
+                continue
+            if not a.get("accountId") or not b.get("accountId"):
                 continue
             delta = (dates[bid] - dates[aid]).days
             same_account = a.get("accountId") == b.get("accountId")
@@ -90,7 +93,9 @@ def reconcile_transaction(review, transaction_id, *, days=7, max_hops=4, max_pat
                 continue
             currency = "verified_equal" if ca and cb else "unverified"
             reciprocal = (
-                (a.get("transfer") or {}).get("id") == bid
+                not same_account
+                and amounts[aid] < 0 < amounts[bid]
+                and (a.get("transfer") or {}).get("id") == bid
                 and (b.get("transfer") or {}).get("id") == aid
                 and a.get("coa") == {"type": "ACCOUNT", "id": b.get("accountId")}
                 and b.get("coa") == {"type": "ACCOUNT", "id": a.get("accountId")}
@@ -133,9 +138,8 @@ def reconcile_transaction(review, transaction_id, *, days=7, max_hops=4, max_pat
                         else "Equal decimal amounts and nearby dates; account/source evidence still requires review",
                     }
                 )
-                seen.add(direction)
     # Preserve every direct candidate; limit only graph traversal, never silently pick a match.
-    trails, truncated = [], False
+    trails, truncated, depth_limited = [], False, False
     adjacency = {}
     for edge in edges:
         adjacency.setdefault(edge["from"], []).append(edge["to"])
@@ -150,7 +154,7 @@ def reconcile_transaction(review, transaction_id, *, days=7, max_hops=4, max_pat
     edges = [e for e in edges if e["from"] in connected and e["to"] in connected]
 
     def walk(path):
-        nonlocal truncated
+        nonlocal truncated, depth_limited
         neighbors = sorted(set(adjacency.get(path[-1], [])) - set(path))
         if len(path) > 1:
             if len(trails) >= max_paths:
@@ -162,6 +166,8 @@ def reconcile_transaction(review, transaction_id, *, days=7, max_hops=4, max_pat
                 walk(path + [neighbor])
                 if truncated:
                     break
+        elif neighbors:
+            depth_limited = True
 
     walk([tid])
     for row in selected.values():
@@ -198,7 +204,9 @@ def reconcile_transaction(review, transaction_id, *, days=7, max_hops=4, max_pat
         "edges": edges,
         "trails": trails,
         "trails_truncated": truncated,
-        "ambiguous": len(set(adjacency.get(tid, []))) > 1,
+        "depth_limited": depth_limited,
+        "ambiguous": any(len(set(adjacency.get(key, []))) > 2 for key in connected)
+        or len(set(adjacency.get(tid, []))) > 1,
         "warnings": warnings,
         "automatic_action": False,
         "note": "Candidates are evidence, not confirmed offsets, categories, or transfer links.",

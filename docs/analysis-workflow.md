@@ -22,7 +22,8 @@ explicit source/account convention. A coincident amount alone never proves a mat
 
 All ambiguous alternatives remain visible. Trails traverse the evidence graph in
 either direction and are not necessarily chronological. Traversal is bounded by
-the requested hop count and a path cap; `trails_truncated` reports the path cap.
+the requested hop count and a path cap; `depth_limited` and `trails_truncated`
+report these limits. `ambiguous` includes branches beyond the selected transaction.
 Review the directed edges and missing-counterpart warnings before recording a
 decision. Zero-dollar journals cannot establish a cash transfer. No helper
 automatically records an offset or creates a transfer link.
@@ -64,7 +65,8 @@ same-payee analysis without guessing household membership. Explicit payee aliase
 join known variants; statement aliases suppress known descriptor discrepancies.
 Conventions may also specify boolean `reports_excluded` and `spending_excluded`.
 Assignments outside a convention become candidates, including uniform but
-unexpected assignments. Mixed categories are candidates, not errors. Investment
+unexpected assignments. Overlapping conventions must all agree before suppressing
+a candidate. Mixed categories are candidates, not errors. Investment
 actions are excluded from ordinary merchant-category analysis.
 
 Preferences stay in the encrypted review and its history. Existing freeform notes
@@ -88,7 +90,9 @@ periodically use full sync. A missing exact lookup becomes a blocked evidence ga
 with its last-known data retained. Sync never guesses replacement IDs.
 
 The immutable original snapshot remains intact. New records retain separate
-first-seen evidence; current state is saved atomically. Existing finding IDs and
+first-seen evidence; history stores changed records rather than repeating the whole
+snapshot on every sync. Known tombstones need no repeated lookup. Current state is
+saved atomically. Existing finding IDs and
 display numbers remain stable, and newly eligible members can join a finding.
 Changed or missing evidence invalidates dependent decisions, execution outcomes
 and reimbursement offsets so they must be reviewed again. History is retained.

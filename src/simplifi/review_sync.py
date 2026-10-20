@@ -99,6 +99,8 @@ def set_review_preferences(directory, value):
 
 def sync_review(client, directory, *, modified_after=None):
     if modified_after is not None:
+        if not isinstance(modified_after, str):
+            raise SimplifiError("Modified-after must be an ISO timestamp with timezone")
         try:
             stamp = datetime.fromisoformat(modified_after.replace("Z", "+00:00"))
             if stamp.tzinfo is None:
@@ -141,6 +143,8 @@ def sync_review(client, directory, *, modified_after=None):
         if modified_after is None:
             # An absent list row is not proof of deletion or a replacement ID.
             for tid in sorted(cached.keys() - observed.keys()):
+                if cached[tid].get("isDeleted"):
+                    continue
                 try:
                     t = client.transaction(tid)
                     if str(t.get("id")) != tid:
@@ -161,8 +165,9 @@ def sync_review(client, directory, *, modified_after=None):
         wire["current"]["accounts"] = client.accounts()
         wire["current"]["downloaded_at"] = started
         first_seen = wire["context"].setdefault("added_originals", {})
+        original_ids = {str(t["id"]) for t in review.original.transactions}
         for tid, t in added.items():
-            if tid not in {str(t["id"]) for t in review.original.transactions}:
+            if tid not in original_ids:
                 first_seen.setdefault(tid, t)
         original_categories = {str(c["id"]) for c in review.original.categories}
         for c in wire["current"]["categories"]:

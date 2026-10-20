@@ -206,6 +206,7 @@ def analyze(snapshot, *, existing=(), preferences=None, resolved_ids=()):
 
     preferences = preferences or ReviewPreferences()
     accounts = {str(a["id"]): a for a in snapshot.accounts}
+    payee_aliases = {normalize(k): normalize(v) for k, v in preferences.payee_aliases.items()}
     groups = defaultdict(list)
     for t in snapshot.transactions:
         day = transaction_date(t)
@@ -216,7 +217,8 @@ def analyze(snapshot, *, existing=(), preferences=None, resolved_ids=()):
             and snapshot.start.isoformat() <= day <= snapshot.end.isoformat()
         ):
             owner = preferences.account_owners.get(str(t.get("accountId")))
-            groups[(owner or "", preferences.payee(t))].append(t)
+            payee = normalize(transaction_payee(t))
+            groups[(owner or "", payee_aliases.get(payee, payee))].append(t)
     findings = list(existing)
     indexes = {f.id: i for i, f in enumerate(findings)}
     number = max((f.number for f in findings), default=0)
@@ -226,8 +228,13 @@ def analyze(snapshot, *, existing=(), preferences=None, resolved_ids=()):
     }
     for (owner, payee), rows in sorted(groups.items()):
         candidates = []
+        applicable = {
+            str(t["id"]): [c for c in preferences.conventions if c.matches_scope(t)] for t in rows
+        }
         accepted = {
-            str(t["id"]) for t in rows if any(c.accepts(t) for c in preferences.conventions)
+            str(t["id"])
+            for t in rows
+            if applicable[str(t["id"])] and all(c.accepts(t) for c in applicable[str(t["id"])])
         }
         if len({digest(t.get("coa")) for t in rows}) > 1:
             candidates.append(
@@ -239,10 +246,7 @@ def analyze(snapshot, *, existing=(), preferences=None, resolved_ids=()):
                 )
             )
         outside_convention = [
-            t
-            for t in rows
-            if any(c.matches_scope(t) for c in preferences.conventions)
-            and str(t["id"]) not in accepted
+            t for t in rows if applicable[str(t["id"])] and str(t["id"]) not in accepted
         ]
         if outside_convention:
             candidates.append(

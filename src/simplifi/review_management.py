@@ -203,7 +203,8 @@ def refreshed_wire(review, results, *, invalidated=()):
         {
             "kind": "refresh",
             "recorded_at": now(),
-            "results": results,
+            "results": {tid: results[tid] for tid in sorted(changed)},
+            "refreshed_count": len(results),
             "invalidated": sorted(affected),
         }
     )

@@ -230,3 +230,24 @@ def test_zero_anomaly_warning_is_scoped_to_observed_operator():
             {"amountSourceCondition": {"amountMatchingOperator": operator, "amount1": 0}}
         )
         assert all(w["code"] != "zero_threshold_unverified" for w in warnings)
+
+
+def test_probe_existing_output_fails_before_network(setup, tmp_path):
+    client, _, examples, calls = setup
+    path = tmp_path / "existing.dpapi"
+    path.write_bytes(b"existing encrypted report placeholder")
+    with pytest.raises(SimplifiError, match="already exists"):
+        probe_rule_amounts(client, "rule", list(examples), output_path=path)
+    assert path.read_bytes() == b"existing encrypted report placeholder"
+    client.transaction_rule.assert_not_called()
+    assert not calls
+
+
+def test_probe_rejects_wrong_rule_identity_before_preview(setup, tmp_path):
+    client, original, examples, calls = setup
+    original["id"] = "another-rule"
+    path = tmp_path / "wrong-rule.dpapi"
+    with pytest.raises(SimplifiError, match="different ID"):
+        probe_rule_amounts(client, "rule", list(examples), output_path=path)
+    client.transaction.assert_not_called()
+    assert not calls and not path.exists()

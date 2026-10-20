@@ -48,7 +48,7 @@ def preview_warnings(payload):
         warnings.append(
             {
                 "code": "zero_threshold_unverified",
-                "message": "Zero-threshold preview coverage has shown inconsistent results; verify boundaries without changing the threshold.",
+                "message": "Observed GREATER_THAN 0 previews were inconsistent; verify boundary examples.",
                 "server_cause": "unconfirmed",
             }
         )
@@ -57,7 +57,7 @@ def preview_warnings(payload):
             {
                 "code": "strict_boundary",
                 "boundary": str(boundary),
-                "message": "The local strict comparison excludes an amount exactly equal to the threshold; a one-cent threshold is not a substitute for zero.",
+                "message": "Strict comparison excludes the boundary amount. Changing zero to one cent changes coverage.",
             }
         )
     return warnings
@@ -113,6 +113,8 @@ def probe_rule_amounts(
 ):
     if Path(output_path).suffix != ".dpapi":
         raise SimplifiError("Probe reports must use encrypted .dpapi output")
+    if Path(output_path).exists():
+        raise SimplifiError("Probe output already exists; choose a new path")
     if operator not in {"GREATER_THAN", "LESS_THAN", "EQUALS"}:
         raise SimplifiError("Probe operator must use a single threshold")
     if (
@@ -131,6 +133,8 @@ def probe_rule_amounts(
     except (ValueError, TypeError, InvalidOperation, OverflowError):
         raise SimplifiError("Invalid or imprecise probe thresholds") from None
     original = client.transaction_rule(rule_id)
+    if str(original.get("id")) != rule_id:
+        raise SimplifiError("Rule lookup returned a different ID")
     examples = {tid: client.transaction(tid) for tid in transaction_ids}
     if any(str(t.get("id")) != tid for tid, t in examples.items()):
         raise SimplifiError("Boundary example returned a different ID")
@@ -158,7 +162,6 @@ def probe_rule_amounts(
                     "local_expected": expected,
                     "observed_in_sample": seen,
                     "needs_investigation": expected is not None and expected != seen,
-                    "note": "Sample absence is not proof of nonmatching; local predicates are not a verified server contract.",
                 }
             )
         probes.append(
@@ -184,6 +187,10 @@ def probe_rule_amounts(
         "probes": probes,
         "server_cause": "unconfirmed",
         "live_changes": False,
+        "limitations": [
+            "Sample absence does not prove nonmatching.",
+            "Local predicates are not a verified server contract.",
+        ],
     }
     save_encrypted(Path(output_path), report)
     return {
