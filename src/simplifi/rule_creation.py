@@ -4,7 +4,7 @@ import copy
 import re
 from pathlib import Path
 from typing import Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import Field, model_validator
 
@@ -171,12 +171,25 @@ def inspect_rule_creation(path):
     }
 
 
+def _same_client_id(expected, actual):
+    if not isinstance(expected, str) or not isinstance(actual, str):
+        return False
+    if expected == actual:
+        return True
+    # Quicken serializes UUID identities with uppercase letters and hyphens.
+    # Other client identity formats still require exact equality.
+    try:
+        return UUID(expected) == UUID(actual)
+    except ValueError:
+        return False
+
+
 def _verify_created(op, result):
     if (
         not isinstance(result, dict)
         or not result.get("id")
         or result.get("isDeleted")
-        or result.get("clientId") != op.payload["clientId"]
+        or not _same_client_id(op.payload["clientId"], result.get("clientId"))
         or any(result.get(k) != op.payload.get(k) for k in EDITABLE)
         or (
             result.get("applyToExistingTransactions") is not False

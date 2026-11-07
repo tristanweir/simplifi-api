@@ -39,6 +39,11 @@ are preserved. Creation forces future-only application, rejects duplicate condit
 and reconciles the stable client identity before considering completion. A dropped
 client ID or ambiguous result blocks recovery; it never triggers another POST.
 
+Observed creation responses serialize UUID client IDs with uppercase letters and
+hyphens, even when requests use lowercase hexadecimal UUIDs. Reconciliation accepts
+the same UUID in either representation; non-UUID identities still require exact
+equality. A different or missing identity remains blocked without replay.
+
 ### Link existing transfer counterparts
 
 Implemented in `simplifi.relationship_plans` using an exact batch for two existing

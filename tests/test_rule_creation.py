@@ -2,6 +2,7 @@
 
 import copy
 from unittest.mock import Mock
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -92,6 +93,38 @@ def test_future_only_creation_success_and_resume(setup):
     assert "id" not in posts[0][2]
     assert rules["existing"] == baseline
     assert rules["created"]["clientId"] == posts[0][2]["clientId"]
+
+
+@pytest.mark.parametrize("different_identity", [False, True])
+def test_uuid_normalization_reconciles_without_replaying(setup, monkeypatch, different_identity):
+    client, rules, calls, request, path, kw = setup
+
+    def normalized(client, method, endpoint, payload):
+        result = request(client, method, endpoint, payload)
+        if endpoint == "/transaction-rules":
+            identity = uuid4() if different_identity else UUID(payload["clientId"])
+            rules["created"]["clientId"] = str(identity).upper()
+            raise SimplifiError("Interrupted after server success")
+        return result
+
+    monkeypatch.setattr("simplifi.rule_creation._request", normalized)
+    with pytest.raises(SimplifiError, match="Interrupted"):
+        execute_rule_creation(client, path, **kw)
+    if different_identity:
+        with pytest.raises(SimplifiError, match="identified safely"):
+            execute_rule_creation(client, path, **kw)
+    else:
+        assert execute_rule_creation(client, path, **kw)["complete"]
+        assert execute_rule_creation(client, path, **kw)["complete"]
+    assert len([c for c in calls if c[1] == "/transaction-rules"]) == 1
+
+
+@pytest.mark.parametrize("actual", [None, 123, "SYNTHETIC-ID", "synthetic-id-other"])
+def test_non_uuid_client_ids_still_require_exact_equality(actual):
+    from simplifi.rule_creation import _same_client_id
+
+    assert not _same_client_id("synthetic-id", actual)
+    assert _same_client_id("synthetic-id", "synthetic-id")
 
 
 def test_duplicate_creation_is_rejected_before_transaction_snapshot(setup, tmp_path):
