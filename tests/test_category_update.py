@@ -8,7 +8,9 @@ import responses
 from simplifi.category_update import (
     SingleCategorySession,
     category_payload,
+    transaction_edit_payload,
     update_category,
+    update_transaction_fields,
     verify_correction,
 )
 from simplifi.errors import ReadOnlyViolation, SimplifiError
@@ -38,9 +40,23 @@ def test_payload_changes_only_category_and_excludes_read_metadata():
 
 
 @responses.activate
-@pytest.mark.parametrize("coa", [ORIGINAL["coa"], {"type": "UNCATEGORIZED", "id": "0"}])
-def test_one_scoped_put_and_read_back(tmp_path, coa):
-    original = {**ORIGINAL, "coa": coa}
+@pytest.mark.parametrize(
+    "coa",
+    [
+        ORIGINAL["coa"],
+        {"type": "UNCATEGORIZED", "id": "0"},
+        {"type": "BALANCE_ADJUSTMENT", "id": "2"},
+    ],
+)
+@pytest.mark.parametrize("amount", [-12.34, 12.34])
+def test_one_scoped_put_and_read_back(tmp_path, coa, amount):
+    original = {
+        **ORIGINAL,
+        "coa": coa,
+        "amount": amount,
+        "isExcludedFromReports": True,
+        "isExcludedFromF2S": True,
+    }
     updated = copy.deepcopy(original)
     updated.update(coa={"type": "CATEGORY", "id": "restaurants"}, dbVersion=4, modifiedAt="after")
     client = Mock(dataset_id="dataset")
@@ -61,13 +77,88 @@ def test_one_scoped_put_and_read_back(tmp_path, coa):
     "coa",
     [
         {"type": "UNCATEGORIZED", "id": "other"},
-        {"type": "BALANCE_ADJUSTMENT", "id": "2"},
+        {"type": "BALANCE_ADJUSTMENT", "id": "other"},
+        {"type": "BALANCE_ADJUSTMENT", "id": "2", "unexpected": True},
         {"type": "ACCOUNT", "id": "other"},
     ],
 )
 def test_category_writer_rejects_other_classifications(coa):
     with pytest.raises(ReadOnlyViolation):
         category_payload({**ORIGINAL, "coa": coa}, CATEGORY)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"type": "INVESTMENT"},
+        {"type": "PAYMENT"},
+        {"split": {"items": [{"amount": -12.34}]}},
+        {"transfer": {"id": "counterpart"}},
+        {"isDeleted": True},
+        {"amount": 0},
+        {"amount": True},
+        {"amount": "-12.34"},
+        {"amount": None},
+        {"amount": float("nan")},
+        {"amount": float("inf")},
+    ],
+)
+def test_generic_transfer_category_boundary(change):
+    original = {**ORIGINAL, "coa": {"type": "BALANCE_ADJUSTMENT", "id": "2"}, **change}
+    with pytest.raises(ReadOnlyViolation):
+        category_payload(original, CATEGORY)
+
+
+@responses.activate
+@pytest.mark.parametrize("amount", [-12.34, 12.34])
+def test_generic_transfer_category_and_explicit_flags(tmp_path, amount):
+    original = {
+        **ORIGINAL,
+        "amount": amount,
+        "coa": {"type": "BALANCE_ADJUSTMENT", "id": "2"},
+        "memo": "Keep this note",
+        "check": "example-check",
+        "isExcludedFromReports": True,
+        "isExcludedFromF2S": True,
+    }
+    flags = {"isExcludedFromReports": False, "isExcludedFromF2S": False}
+    updated = {**original, "coa": {"type": "CATEGORY", "id": CATEGORY["id"]}, **flags}
+    client = Mock(dataset_id="dataset")
+    client.transaction.side_effect = [original, updated]
+    client.auth.ensure_access_token.return_value = "synthetic-token"
+    responses.put("https://services.quicken.com/transactions/txn-1", json={})
+    assert (
+        update_transaction_fields(
+            client,
+            original,
+            category=CATEGORY,
+            exclusions=flags,
+            backup_path=tmp_path / "original.dpapi",
+        )
+        == updated
+    )
+    assert len(responses.calls) == 1
+    assert json.loads(responses.calls[0].request.body) == transaction_edit_payload(
+        original, category=CATEGORY, exclusions=flags
+    )
+    assert b"Keep this note" not in (tmp_path / "original.dpapi").read_bytes()
+
+
+@pytest.mark.parametrize("field,value", [("amount", 12.34), ("isExcludedFromReports", False)])
+def test_generic_transfer_category_rejects_unselected_changes(field, value):
+    original = {
+        **ORIGINAL,
+        "coa": {"type": "BALANCE_ADJUSTMENT", "id": "2"},
+        "isExcludedFromReports": True,
+    }
+    payload = category_payload(original, CATEGORY)
+    with pytest.raises(SimplifiError, match="Unapproved"):
+        verify_correction(
+            original,
+            payload,
+            {**original, "coa": payload["coa"], field: value},
+            allowed_changes={"coa"},
+        )
 
 
 def test_scope_rejects_other_fields_and_transactions():

@@ -69,8 +69,11 @@ bind the dataset, refreshed originals, exact payloads and decisions to the diges
 Preparation and execution reject changed data; a confirmation also requires the
 live record to match the review snapshot.
 
-Category edits support unsplit CASH_FLOW records with a category or the observed
-`UNCATEGORIZED/0` classification. Linked transfers and investments are blocked.
+Category edits support unsplit CASH_FLOW records with a category, the observed
+`UNCATEGORIZED/0` classification, or exact generic Transfer `BALANCE_ADJUSTMENT/2`.
+Generic Transfer reclassification requires a finite nonzero amount and no link;
+it uses the same category decision and plan commands. Exclusions remain unchanged
+unless explicitly selected in the decision. Linked transfers and investments are blocked.
 Amounts and signs are preserved, with the same pending-record normalization checks
 as the single-category writer.
 

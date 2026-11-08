@@ -63,6 +63,7 @@ _FIELDS = frozenset(
 
 
 def category_payload(original, category):
+    generic_transfer = original.get("coa") == {"type": "BALANCE_ADJUSTMENT", "id": "2"}
     if (
         original.get("type") != "CASH_FLOW"
         or original.get("split")
@@ -71,9 +72,15 @@ def category_payload(original, category):
         or not (
             original.get("coa", {}).get("type") == "CATEGORY"
             or original.get("coa") == {"type": "UNCATEGORIZED", "id": "0"}
+            or generic_transfer
         )
     ):
-        raise ReadOnlyViolation("Only ordinary, unsplit category transactions are supported")
+        raise ReadOnlyViolation("Only unlinked, unsplit cash-flow category edits are supported")
+    # Reclassify the observed generic Transfer only; do not infer a new direction.
+    if generic_transfer:
+        amount = original.get("amount")
+        if type(amount) not in (int, float) or not math.isfinite(amount) or amount == 0:
+            raise ReadOnlyViolation("An existing finite nonzero amount is required")
     if category.get("isDeleted") or category.get("isNotUserAssignable") or not category.get("id"):
         raise ReadOnlyViolation("Target category is not assignable")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", str(original.get("id", ""))):

@@ -8,7 +8,8 @@ No private account evidence belongs in this document.
 
 - Paginated transaction/category/account/rule reads and encrypted local analysis.
 - Scoped category changes on ordinary, unsplit `CASH_FLOW` records that already
-  have a `CATEGORY` assignment or the observed `UNCATEGORIZED/0` classification,
+  have a `CATEGORY` assignment, `UNCATEGORIZED/0`, or exact generic Transfer
+  `BALANCE_ADJUSTMENT/2` classification,
   and no transfer link: `update_category`.
 - Typed transaction review decisions, encrypted category plans and journals,
   offline legacy import, reimbursement candidates, and regenerated HTML reports:
@@ -30,6 +31,20 @@ No private account evidence belongs in this document.
   backups/journals, and verification that existing transactions remain unchanged.
 
 ## Operation boundaries and retained observations
+
+### Reclassify an unlinked generic Transfer as an expense
+
+Supported through `update_category`, `update_transaction_fields`, and existing
+typed category plans. Only the exact `BALANCE_ADJUSTMENT/2` origin on an active,
+unlinked, unsplit cash-flow record with a finite nonzero amount is accepted.
+The signed amount is preserved; exclusions remain unchanged unless explicitly
+selected. Linked account transfers still require their separate relationship plan.
+See [write contracts](write-contracts.md) for frontend provenance and test limits.
+
+Previously this required the website editor, which cleared exclusions and
+normalized absent memos from null to blank. The API writer does not reproduce
+those UI side effects implicitly. Unexpected read-back changes still block
+execution without replay.
 
 ### Create transaction rules
 

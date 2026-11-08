@@ -56,7 +56,7 @@ The digest binds exact operations and dataset; it does not grant authorization. 
 
 ## Capability boundaries and persistence
 
-The category plan executor currently supports unsplit, unlinked CASH_FLOW category edits and confirmations. It blocks investments and linked transfers deliberately. Generic transfer classification has a separate scoped `simplifi.category_update.update_transfer_classification` writer. Inspect its current contract; use only for authorized existing cash-flow records with encrypted backup and read-back. It does not create reciprocal links. Do not force transfer classification into a category plan.
+The category plan executor supports unsplit, unlinked CASH_FLOW category edits and confirmations, including reclassification from exact generic Transfer `BALANCE_ADJUSTMENT/2` with a finite nonzero amount. It preserves amount signs and unselected exclusions. It blocks investments and linked transfers deliberately. Setting generic Transfer classification uses the separate transfer decision or scoped `simplifi.category_update.update_transfer_classification` writer. Inspect its current contract; use only for authorized existing cash-flow records with encrypted backup and read-back. It does not create reciprocal links.
 
 Rules, exclusion flags, transfer links, recurring links, and payee/memo edits require their own supported operations. Check implementation before assuming availability. After UI edits, false flags may be omitted and null memos may become empty strings; verify effective flags and content without relaxing general validation.
 

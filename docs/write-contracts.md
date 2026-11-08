@@ -22,6 +22,7 @@ the relevant frontend functions without reproducing the bundles.
 | Operation | Frontend request | Evidence and implemented boundary |
 |---|---|---|
 | Payee/memo | `PUT /transactions/{id}` with CASH_FLOW transform | `transformTransactionToRequestData` and its common field transform include `payee` and `memo`. Explicit text fields are composed with supported category/flag edits. |
+| Generic Transfer to category | `PUT /transactions/{id}` with CASH_FLOW transform | `transformTransactionToRequestData` selects the transform by transaction type; its common transform sends the selected `coa.type`/`coa.id`, the original signed `amount`, and both exclusion flags. There is no separate request shape for an unlinked `BALANCE_ADJUSTMENT/2` origin. The client accepts only this exact generic Transfer, preserves signs and unselected fields, and rejects linked, split, deleted and investment records. |
 | Transfer link/unlink | `PUT /transactions` with `{"resources": [...]}` | `transformTransactionsToRequestData`, `qcsSyncUpdateResources`, `createRequiredTransferTxns`, and transfer preprocessing show the batch envelope, existing counterpart references, and uncategorizing/removing links. Only two existing unsplit cash-flow records may be sent. Both original dates, signs, notes and exclusions are preserved; no create/delete records are included. |
 | Rule creation | `POST /transaction-rules` with rule transform | The rule API's `create` method uses the same transform as previews/updates and expects an ID/resource response. Creation plans use a stable `clientId`, omit server IDs and ordering metadata, and force `applyToExistingTransactions: false`. |
 | Recurring unlink | `PUT /transactions/{id}/unlink-to-scheduled-txn` with `{"id": "...", "action": "unlink-to-scheduled-txn"}` | The main bundle dispatches the action with a transaction ID. The transaction action saga builds the action path, copies the action payload, and uses `qcsSyncUpdateResource`, which sends PUT. Only a selected bank cash-flow record with a known series and bank identity is eligible. |
@@ -31,6 +32,14 @@ than date/amount auto-matching. The frontend can otherwise create a counterpart,
 change the counterpart date, or delete a manually entered counterpart. This client
 never requests those behaviors. The actual preservation of both sides must be
 established by reads; batch atomicity is not assumed.
+
+The generic Transfer-to-category extension was checked offline against the same
+hashed bundles above. Synthetic tests cover the scoped PUT and typed plans with
+positive and negative amounts, unchanged or explicitly cleared exclusions,
+read-back field preservation, and reconciliation without replay after a lost
+response. This extension has not been exercised against the live backend; no
+live account requests were made while implementing it. If an actual read-back
+differs, retain the journal and inspect rather than loosening verification.
 
 Recurring unlink reconciliation handles either an unchanged ID or exactly one new
 record with the original bank identity and preserved financial fields. An old-ID

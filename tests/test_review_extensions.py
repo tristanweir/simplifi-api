@@ -148,6 +148,61 @@ def test_transfer_direction_preview_and_resume(review_setup, tmp_path, monkeypat
     assert review_summary(r)["changed"] == 1
 
 
+@pytest.mark.parametrize("amount", [-42.50, 42.50])
+@pytest.mark.parametrize("include", [False, True])
+def test_generic_transfer_to_category_resumes_without_replay(
+    review_setup, tmp_path, monkeypatch, amount, include
+):
+    directory, client, store = review_setup
+    store["t1"].update(coa={"type": "BALANCE_ADJUSTMENT", "id": "2"}, amount=amount)
+    refresh_transactions(client, directory, ["t1"])
+    flags = {"isExcludedFromReports": False, "isExcludedFromF2S": False} if include else {}
+    decision(directory, "category", category_id="new", exclusions=flags)
+    path, preview, kw = plan(directory, client, tmp_path)
+    operation = preview["operations"][0]
+    assert operation["before"] == {"type": "BALANCE_ADJUSTMENT", "id": "2"}
+    assert operation["after"] == {"type": "CATEGORY", "id": "new"}
+    assert operation["after_amount"] == amount
+    assert operation["after_exclusions"] == {
+        "isExcludedFromReports": not include,
+        "isExcludedFromF2S": not include,
+    }
+    calls = []
+
+    def writer(client, original, category, *, backup_path, **kwargs):
+        calls.append(original["id"])
+        store["t1"].update(transaction_edit_payload(original, category=category, **kwargs))
+        raise SimplifiError("Lost response after server success")
+
+    monkeypatch.setattr("simplifi.transaction_plans.update_category", writer)
+    monkeypatch.setattr("simplifi.transaction_plans.update_transaction_fields", writer)
+    with pytest.raises(SimplifiError, match="Lost response"):
+        execute_transaction_plan(client, path, **kw)
+    execute_transaction_plan(client, path, **kw)
+    execute_transaction_plan(client, path, **kw)
+    assert calls == ["t1"]
+    current = load_review(directory).current.transactions[0]
+    assert current["coa"] == operation["after"]
+    assert current["amount"] == amount
+    assert current["isExcludedFromReports"] is not include
+    assert current["isExcludedFromF2S"] is not include
+
+
+def test_generic_transfer_uncertain_write_is_not_replayed(review_setup, tmp_path, monkeypatch):
+    directory, client, store = review_setup
+    store["t1"]["coa"] = {"type": "BALANCE_ADJUSTMENT", "id": "2"}
+    refresh_transactions(client, directory, ["t1"])
+    decision(directory, "category", category_id="new")
+    path, _, kw = plan(directory, client, tmp_path)
+    writer = Mock(side_effect=SimplifiError("Uncertain dispatch"))
+    monkeypatch.setattr("simplifi.transaction_plans.update_category", writer)
+    with pytest.raises(SimplifiError, match="Uncertain dispatch"):
+        execute_transaction_plan(client, path, **kw)
+    with pytest.raises(SimplifiError, match="read-back"):
+        execute_transaction_plan(client, path, **kw)
+    assert writer.call_count == 1
+
+
 @pytest.mark.parametrize(
     "action,extra",
     [
