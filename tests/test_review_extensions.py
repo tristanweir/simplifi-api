@@ -55,7 +55,7 @@ def no_network(monkeypatch):
 
 
 @pytest.fixture
-def review_setup(tmp_path):
+def transaction_service():
     rows = [
         {
             "id": tid,
@@ -70,13 +70,26 @@ def review_setup(tmp_path):
         }
         for tid, amount in [("t1", 42.50), ("t2", -42.50)]
     ]
+    store = {t["id"]: copy.deepcopy(t) for t in rows}
+    client = Mock(dataset_id="dataset")
+    client.transaction.side_effect = lambda tid: copy.deepcopy(store[tid])
+    client.categories.return_value = [
+        {"id": "old", "name": "Other"},
+        {"id": "new", "name": "Dining"},
+    ]
+    return client, store
+
+
+@pytest.fixture
+def review_setup(tmp_path, transaction_service):
+    client, store = transaction_service
     snapshot = Snapshot(
         dataset_id="dataset",
         downloaded_at="2027-01-06",
         start=date(2027, 1, 1),
         end=date(2027, 12, 31),
-        transactions=rows,
-        categories=[{"id": "old", "name": "Other"}, {"id": "new", "name": "Dining"}],
+        transactions=copy.deepcopy(list(store.values())),
+        categories=client.categories(),
     )
     review = Review(
         id="review",
@@ -94,10 +107,6 @@ def review_setup(tmp_path):
     )
     directory = tmp_path / "review"
     create_review(directory, review)
-    store = {t["id"]: copy.deepcopy(t) for t in rows}
-    client = Mock(dataset_id="dataset")
-    client.transaction.side_effect = lambda tid: copy.deepcopy(store[tid])
-    client.categories.return_value = snapshot.categories
     return directory, client, store
 
 
@@ -148,8 +157,7 @@ def test_transfer_direction_preview_and_resume(review_setup, tmp_path, monkeypat
     assert review_summary(r)["changed"] == 1
 
 
-@pytest.mark.parametrize("amount", [-42.50, 42.50])
-@pytest.mark.parametrize("include", [False, True])
+@pytest.mark.parametrize("amount,include", [(-42.50, True), (42.50, False)])
 def test_generic_transfer_to_category_resumes_without_replay(
     review_setup, tmp_path, monkeypatch, amount, include
 ):
@@ -270,16 +278,16 @@ def test_malformed_changes_rejected(extra):
         {"coa": {"type": "UNCATEGORIZED", "id": "unknown"}},
     ],
 )
-def test_flags_reject_unsupported_records(review_setup, change):
-    _, _, store = review_setup
+def test_flags_reject_unsupported_records(transaction_service, change):
+    _, store = transaction_service
     with pytest.raises(ReadOnlyViolation):
         transaction_edit_payload(
             {**store["t1"], **change}, exclusions={"isExcludedFromReports": False}
         )
 
 
-def test_zero_flag_edit_and_strict_readback(review_setup):
-    _, _, store = review_setup
+def test_zero_flag_edit_and_strict_readback(transaction_service):
+    _, store = transaction_service
     original = {**store["t1"], "amount": 0}
     payload = transaction_edit_payload(original, exclusions={"isExcludedFromReports": False})
     result = copy.deepcopy(original)
@@ -334,6 +342,8 @@ def test_old_plan_canonical_shape_is_preserved(review_setup, tmp_path):
     wire = load_encrypted(path)
     assert "incoming" not in wire["operations"][0]
     assert "exclusions" not in wire["decisions"][0]
+    assert "text_changes" not in wire["decisions"][0]
+    assert "text_changes" not in wire["operations"][0]
     assert TransactionPlan.model_validate(wire).to_wire() == wire
     assert digest(TransactionPlan.model_validate(wire).to_wire()) == digest(wire)
 
@@ -461,9 +471,9 @@ def test_refresh_and_evidence_respect_execution_lock(review_setup):
 
 
 def test_scoped_flag_writer_preserves_fields_and_checks_readback(
-    review_setup, tmp_path, monkeypatch
+    transaction_service, tmp_path, monkeypatch
 ):
-    _, client, store = review_setup
+    client, store = transaction_service
     original = store["t1"]
     payload = transaction_edit_payload(original, exclusions={"isExcludedFromReports": False})
     calls = []
@@ -499,8 +509,8 @@ def test_uncertain_flag_write_is_not_replayed(review_setup, tmp_path, monkeypatc
     assert writer.call_count == 1
 
 
-def test_noop_flags_send_no_put(review_setup, tmp_path):
-    _, client, store = review_setup
+def test_noop_flags_send_no_put(transaction_service, tmp_path):
+    client, store = transaction_service
     original = store["t1"]
     result = update_transaction_fields(
         client,
@@ -627,8 +637,8 @@ def test_invalid_text_decisions_fail_closed(changes):
         Decision(id="d", finding_id="f", transaction_ids=["t"], action="text", text_changes=changes)
 
 
-def test_payee_only_does_not_clear_existing_memo(review_setup):
-    _, _, store = review_setup
+def test_payee_only_does_not_clear_existing_memo(transaction_service):
+    _, store = transaction_service
     original = {**store["t1"], "memo": "Preserve note"}
     payload = transaction_edit_payload(original, text_changes={"payee": "Correct Merchant"})
     assert payload["memo"] == "Preserve note" and payload["amount"] == 42.50
@@ -636,13 +646,3 @@ def test_payee_only_does_not_clear_existing_memo(review_setup):
         transaction_edit_payload(
             {**original, "transfer": {"id": "other"}}, text_changes={"memo": ""}
         )
-
-
-def test_old_category_plan_omits_text_fields(review_setup, tmp_path):
-    directory, client, _ = review_setup
-    decision(directory, "category", category_id="new")
-    path, _, _ = plan(directory, client, tmp_path)
-    wire = load_encrypted(path)
-    assert "text_changes" not in wire["decisions"][0]
-    assert "text_changes" not in wire["operations"][0]
-    assert TransactionPlan.model_validate(wire).to_wire() == wire

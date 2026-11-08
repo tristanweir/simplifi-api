@@ -29,6 +29,7 @@ browser = ["playwright>=1.50,<2"]
 dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
+  "pytest-xdist>=3.6,<4",
   "responses>=0.25",
   "ruff>=0.6",
 ]
@@ -54,6 +55,7 @@ include = ["src/simplifi", "docs", "scripts", "tests", "README.md", "LICENSE", "
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "-n auto --maxprocesses=4"
 
 [tool.ruff]
 line-length = 100

@@ -179,6 +179,13 @@ Tests use synthetic fixtures and mocked API calls, plus real Windows DPAPI check
 They do not authenticate to a live account or require a browser download. GitHub
 Actions runs the suite on Windows/Python 3.10 and 3.12.
 
+The full suite runs on up to four isolated pytest workers by default (two in CI).
+Each test keeps its own temporary files; real DPAPI, filesystem and locking checks
+remain enabled. Install the development dependencies or the lock file first.
+Use `python -m pytest -q -n 0` for serial debugging. For a narrow change, run the
+affected test modules first, then the full suite before committing. Avoid rerunning
+the full suite after documentation-only changes once the code checks have passed.
+
 For a focused upstream PR, branch from `upstream/main` and cherry-pick the relevant
 commits from this fork. Keep browser/authentication changes separate from the opt-in
 category writer: upstream's existing contribution policy is read-only. See
