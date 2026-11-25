@@ -16,6 +16,7 @@ class TokenSet(SimplifiModel):
     refresh_token: str = Field(repr=False)
     access_token_expires_at: str | None = None
     refresh_token_expires_at: str | None = None
+    web_client_secret: str | None = Field(default=None, repr=False)
 
 
 class TracedFigure(SimplifiModel):

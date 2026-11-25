@@ -1,4 +1,4 @@
-"""Atomic, current-Windows-user DPAPI token storage. No plaintext fallback."""
+"""Windows-only token persistence with atomic storage under current-user DPAPI."""
 
 from __future__ import annotations
 

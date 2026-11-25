@@ -47,11 +47,12 @@ plaintext credentials.
 ```
 
 Complete sign-in and MFA yourself on Quicken's website in the separate window.
-The helper observes only the successful token endpoint response from that isolated
-browser context. It does not read login form fields, request bodies, your normal
-browser profile, or unrelated response bodies. It saves no HAR, screenshots,
-traces, or browser-storage exports. Close the dedicated window to cancel; sign-in
-times out after ten minutes. Do not open unrelated sites in that window.
+The helper reads the successful token response from that isolated browser context
+and extracts public OAuth client metadata from the matching exchange request.
+It discards the authorization code and other request fields. Login forms, your
+normal browser profile, and unrelated requests and responses are outside this
+capture. Close the dedicated window to cancel. Sign-in times out after ten minutes.
+Keep that window dedicated to Quicken.
 
 After capture, the browser closes. Candidate tokens stay in memory until direct
 profile, dataset, account, and transaction reads succeed. Only then are the tokens
@@ -66,12 +67,18 @@ categories, and tags. See [endpoint map](docs/endpoint-map.md).
 
 ## Authentication and data handling
 
+- Persistent sign-in is **Windows-only**. The cache belongs to the Windows user
+  who created it. Sign in separately on each Windows machine. macOS and Linux
+  have no persistent authentication backend in this fork.
 - Access/refresh tokens are encrypted with current-user Windows DPAPI in
   `.local/tokens.dpapi`, with atomic replacement and no plaintext fallback.
 - Expired tokens and rejected reads can refresh once; rotated tokens are saved.
   Run one client process at a time against a shared cache.
-- The public web app's OAuth client metadata is resolved from Quicken's public
-  application bundle when needed; no credential-shaped app constant is embedded.
+- The encrypted cache includes the public web app metadata from a recognized
+  successful sign-in or refresh. The client reuses it across restarts, with
+  public bundle discovery when metadata is missing or Quicken explicitly rejects
+  the cached OAuth client. An ambiguous refresh error does not trigger a retry.
+  Older caches can gain metadata on the next successful refresh or browser sign-in.
 - Authenticated traffic stays on HTTPS `services.quicken.com`. Redirects are
   blocked, certificate verification stays enabled, and environment proxy settings
   and `.netrc` are not inherited. Public metadata lookup uses a separate, unauthenticated

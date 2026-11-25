@@ -5,6 +5,7 @@ import pytest
 import responses
 
 from simplifi.browser_login import is_token_response, parse_browser_tokens, verify_and_save
+from simplifi.constants import CLIENT_ID, REDIRECT_URI
 from simplifi.errors import AuthError, SimplifiHTTPError
 from simplifi.models import TokenSet
 
@@ -102,7 +103,8 @@ def test_failed_reads_do_not_overwrite_cache_or_receipt(monkeypatch):
     receipt.assert_not_called()
 
 
-def test_browser_capture_closes_context_and_does_not_read_requests(monkeypatch):
+@pytest.mark.parametrize("client_id", [CLIENT_ID, "other-client"])
+def test_browser_capture_retains_only_accepted_web_metadata(monkeypatch, client_id):
     from simplifi.browser_login import capture_tokens
 
     for key in ("DEBUG", "PWDEBUG", "SSLKEYLOGFILE"):
@@ -116,7 +118,16 @@ def test_browser_capture_closes_context_and_does_not_read_requests(monkeypatch):
     response = SimpleNamespace(
         url="https://services.quicken.com/oauth/token",
         status=200,
-        request=SimpleNamespace(method="POST"),
+        request=SimpleNamespace(
+            method="POST",
+            post_data_json={
+                "grantType": "authorization_code",
+                "clientId": client_id,
+                "redirectUri": REDIRECT_URI,
+                "clientSecret": "synthetic-web-metadata",
+                "code": "authorization-code-not-retained",
+            },
+        ),
         json=lambda: {"accessToken": "access", "refreshToken": "refresh"},
     )
 
@@ -135,6 +146,10 @@ def test_browser_capture_closes_context_and_does_not_read_requests(monkeypatch):
     monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: manager)
     tokens = capture_tokens()
     assert tokens.access_token == "access"
+    assert tokens.web_client_secret == (
+        "synthetic-web-metadata" if client_id == CLIENT_ID else None
+    )
+    assert "authorization-code-not-retained" not in tokens.model_dump_json()
     playwright.chromium.launch.assert_called_once_with(channel="chrome", headless=False)
     browser.new_context.assert_called_once_with(accept_downloads=False)
     browser.close.assert_called_once()

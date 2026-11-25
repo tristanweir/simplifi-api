@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -25,8 +24,6 @@ from simplifi.models import TokenSet
 from simplifi.public_client import public_client_secret
 from simplifi.secure_session import SecureSession
 from simplifi.token_store import TokenStore
-
-logger = logging.getLogger("simplifi.auth")
 
 
 def _utc_now() -> datetime:
@@ -118,18 +115,12 @@ class AuthSession:
 
     def ensure_access_token(self) -> str:
         tokens = self._tokens or self.token_store.load()
+        self._tokens = tokens
         if tokens and not self._access_expired(tokens):
-            self._tokens = tokens
             return tokens.access_token
 
         if tokens and tokens.refresh_token:
-            try:
-                refreshed = self.refresh(tokens.refresh_token)
-                self._tokens = refreshed
-                self.token_store.save(refreshed)
-                return refreshed.access_token
-            except AuthError as exc:
-                logger.warning("Token refresh failed: %s", exc)
+            return self.refresh_access_token()
 
         raise AuthError("No valid access token. Run `simplifi login` or call Client.login() first.")
 
@@ -232,43 +223,105 @@ class AuthSession:
         raise AuthError(f"Authorize did not return a code (HTTP {response.status_code})")
 
     def exchange_code(self, code: str) -> TokenSet:
-        if not self.client_secret:
-            self.client_secret = public_client_secret()
+        secret = self.client_secret or public_client_secret()
         response = self.session.post(
             f"{self.base_url}/oauth/token",
             json={
                 "grantType": "authorization_code",
                 "clientId": self.client_id,
-                "clientSecret": self.client_secret,
+                "clientSecret": secret,
                 "code": code,
                 "redirectUri": self.redirect_uri,
             },
             headers=self._auth_headers(),
+            allow_redirects=False,
             timeout=60,
         )
         if response.status_code != 200:
             raise self._failure("Token exchange", response)
-        return self._parse_token_payload(response.json())
+        return self._accepted_tokens(response, secret)
 
     def refresh(self, refresh_token: str) -> TokenSet:
-        if not self.client_secret:
-            self.client_secret = public_client_secret()
-        response = self.session.post(
+        cached_secret = (
+            self._tokens.web_client_secret
+            if self._uses_default_web_client()
+            and self._tokens
+            and self._tokens.refresh_token == refresh_token
+            else None
+        )
+        secret = cached_secret or self.client_secret or self._discover_refresh_metadata()
+        response = self._request_refresh(refresh_token, secret)
+        oauth_error = self._refresh_error_code(response)
+        if cached_secret and oauth_error == "invalid_client":
+            # The server explicitly rejected the client, so the grant was not consumed.
+            discovered = self._discover_refresh_metadata()
+            if discovered != secret:
+                secret = discovered
+                response = self._request_refresh(refresh_token, secret)
+                oauth_error = self._refresh_error_code(response)
+        if oauth_error == "invalid_client":
+            raise AuthError("Quicken rejected the OAuth client configuration")
+        if oauth_error == "invalid_grant":
+            raise AuthError("Quicken rejected the refresh token. Sign in locally again.")
+        if response.status_code != 200:
+            raise self._failure("Token refresh", response)
+        return self._accepted_tokens(response, secret)
+
+    def _uses_default_web_client(self) -> bool:
+        return not self.client_secret and (self.base_url, self.client_id, self.redirect_uri) == (
+            BASE_URL,
+            CLIENT_ID,
+            REDIRECT_URI,
+        )
+
+    @staticmethod
+    def _discover_refresh_metadata() -> str:
+        try:
+            return public_client_secret()
+        except AuthError as exc:
+            raise AuthError(f"OAuth configuration lookup failed: {exc}") from None
+
+    @staticmethod
+    def _refresh_error_code(response: requests.Response) -> str | None:
+        if response.status_code in (400, 401):
+            try:
+                payload = response.json()
+                if isinstance(payload, dict) and payload.get("error") in (
+                    "invalid_client",
+                    "invalid_grant",
+                ):
+                    return payload["error"]
+            except ValueError:
+                pass
+        return None
+
+    def _accepted_tokens(self, response: requests.Response, secret: str) -> TokenSet:
+        try:
+            payload = response.json()
+        except ValueError:
+            raise AuthError("Unexpected token response; details suppressed") from None
+        if not isinstance(payload, dict):
+            raise AuthError("Unexpected token response; details suppressed")
+        tokens = self._parse_token_payload(payload)
+        if self._uses_default_web_client():
+            tokens.web_client_secret = secret
+        return tokens
+
+    def _request_refresh(self, refresh_token: str, secret: str) -> requests.Response:
+        return self.session.post(
             f"{self.base_url}/oauth/token",
             json={
                 "grantType": "refreshToken",
                 "responseType": "token",
                 "redirectUri": self.redirect_uri,
                 "clientId": self.client_id,
-                "clientSecret": self.client_secret,
+                "clientSecret": secret,
                 "refreshToken": refresh_token,
             },
             headers=self._auth_headers(),
+            allow_redirects=False,
             timeout=60,
         )
-        if response.status_code != 200:
-            raise self._failure("Token refresh", response)
-        return self._parse_token_payload(response.json())
 
     def refresh_access_token(self) -> str:
         if not self._tokens or not self._tokens.refresh_token:

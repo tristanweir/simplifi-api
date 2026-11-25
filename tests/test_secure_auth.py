@@ -15,13 +15,19 @@ from simplifi.token_store import TokenStore
 
 def test_dpapi_roundtrip_and_no_plaintext(tmp_path):
     store = TokenStore(tmp_path / "tokens.dpapi")
-    tokens = TokenSet(access_token="secret-access", refresh_token="secret-refresh")
+    tokens = TokenSet(
+        access_token="secret-access",
+        refresh_token="secret-refresh",
+        web_client_secret="synthetic-web-metadata",
+    )
     store.save(tokens)
     original = store.path.read_bytes()
     assert b"secret-access" not in original
     assert b"secret-refresh" not in original
+    assert b"synthetic-web-metadata" not in original
     assert store.load() == tokens
     assert "secret-access" not in repr(tokens)
+    assert "synthetic-web-metadata" not in repr(tokens)
     store.path.write_bytes(b"corrupt")
     with pytest.raises(AuthError):
         store.load()
@@ -74,6 +80,65 @@ def test_expired_tokens_refresh_and_persist(tmp_path):
     auth = AuthSession(token_store=store)
     assert auth.ensure_access_token() == "new"
     assert store.load().refresh_token == "rotated"
+    assert store.load().web_client_secret == "synthetic-web-client"
+
+
+@pytest.mark.parametrize("error", [None, "invalid_client", "invalid_grant", "ambiguous"])
+@responses.activate
+def test_restart_refresh_uses_cached_metadata(tmp_path, monkeypatch, error):
+    from unittest.mock import Mock
+
+    discovery = Mock(return_value="new-web-metadata")
+    monkeypatch.setattr("simplifi.auth.public_client_secret", discovery)
+    store = TokenStore(tmp_path / "tokens.dpapi")
+    original = TokenSet(
+        access_token="old",
+        refresh_token="refresh",
+        web_client_secret="cached-web-metadata",
+    )
+    store.save(original)
+    url = "https://services.quicken.com/oauth/token"
+    if error:
+        responses.post(url, status=401, json={"error": error, "detail": "do-not-print"})
+    if error in (None, "invalid_client"):
+        responses.post(url, json={"accessToken": "new", "refreshToken": "rotated"})
+
+    auth = AuthSession(token_store=TokenStore(store.path))
+    if error in ("invalid_grant", "ambiguous"):
+        message = "rejected the refresh token" if error == "invalid_grant" else "HTTP 401"
+        with pytest.raises(AuthError, match=message) as exc:
+            auth.ensure_access_token()
+        assert "do-not-print" not in str(exc.value)
+        assert store.load() == original
+    else:
+        assert auth.ensure_access_token() == "new"
+        assert store.load().refresh_token == "rotated"
+        assert store.load().web_client_secret == (
+            "new-web-metadata" if error == "invalid_client" else "cached-web-metadata"
+        )
+
+    secrets = ["cached-web-metadata"]
+    if error == "invalid_client":
+        secrets.append("new-web-metadata")
+        discovery.assert_called_once_with()
+    else:
+        discovery.assert_not_called()
+    assert [json.loads(call.request.body)["clientSecret"] for call in responses.calls] == secrets
+
+
+@responses.activate
+def test_discovery_failure_preserves_legacy_cache(tmp_path, monkeypatch):
+    def unavailable():
+        raise AuthError("Could not locate the public app bundle")
+
+    monkeypatch.setattr("simplifi.auth.public_client_secret", unavailable)
+    store = TokenStore(tmp_path / "tokens.dpapi")
+    original = TokenSet(access_token="old", refresh_token="refresh")
+    store.save(original)
+    with pytest.raises(AuthError, match="OAuth configuration lookup failed"):
+        AuthSession(token_store=store).ensure_access_token()
+    assert not responses.calls
+    assert store.load() == original
 
 
 @pytest.mark.parametrize(

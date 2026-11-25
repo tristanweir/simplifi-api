@@ -1,13 +1,15 @@
-"""User-operated browser login; capture only Quicken's successful token response."""
+"""User-operated browser login with scoped capture of the successful exchange."""
 
 from __future__ import annotations
 
 import os
+import re
 import time
 from urllib.parse import urlsplit
 
 from simplifi.auth import AuthSession
 from simplifi.client import Client
+from simplifi.constants import CLIENT_ID, REDIRECT_URI
 from simplifi.errors import AuthError
 from simplifi.models import TokenSet
 from simplifi.token_store import TokenStore
@@ -53,6 +55,19 @@ def parse_browser_tokens(payload) -> TokenSet:
     return auth._parse_token_payload(payload)
 
 
+def _web_client_secret(payload) -> str | None:
+    if (
+        isinstance(payload, dict)
+        and payload.get("grantType") == "authorization_code"
+        and payload.get("clientId") == CLIENT_ID
+        and payload.get("redirectUri") == REDIRECT_URI
+    ):
+        value = payload.get("clientSecret")
+        if isinstance(value, str) and re.fullmatch(r"[!-~]{1,512}", value):
+            return value
+    return None
+
+
 def capture_tokens(*, channel="chrome", timeout_seconds=600) -> TokenSet:
     if any(os.environ.get(key) for key in ("DEBUG", "PWDEBUG", "SSLKEYLOGFILE")):
         raise AuthError("Disable DEBUG, PWDEBUG, and SSLKEYLOGFILE before browser sign-in")
@@ -66,13 +81,20 @@ def capture_tokens(*, channel="chrome", timeout_seconds=600) -> TokenSet:
     parse_failed = []
 
     def on_response(response):
-        # Never access request bodies, form fields, cookies, or unrelated response bodies.
         if captured or not is_token_response(response):
             return
         try:
-            captured.append(parse_browser_tokens(response.json()))
+            tokens = parse_browser_tokens(response.json())
         except (ValueError, TypeError, AuthError, BrowserError):
             parse_failed.append(True)
+            return
+        # Read only this successful exchange's POST. Discard the authorization code
+        # and all other fields. Unknown request formats still allow token-only sign-in.
+        try:
+            tokens.web_client_secret = _web_client_secret(response.request.post_data_json)
+        except (ValueError, BrowserError):
+            pass
+        captured.append(tokens)
 
     print(
         "Opening a separate browser window. Sign in and complete MFA on Quicken's website.",
