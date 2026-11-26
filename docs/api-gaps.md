@@ -128,6 +128,8 @@ sync coverage limits and preview sample limitations.
   records can be misleading. Inspect transaction type, investment action, and
   exclusion flags. Do not rewrite trades just because a raw category resembles a
   merchant-spending category. The investment UI displays investment actions.
+  For an Income Dividend, the editor exposes the investment Type and has no
+  separate cash-flow category control. Verify the displayed action and exclusions.
 - **UI amount sign change:** selecting generic Transfer for an incoming
   Payment/Deposit record in an investment account flipped its amount negative.
   Read-back caught this; the scoped API classification writer restored the exact
