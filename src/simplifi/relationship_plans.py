@@ -15,6 +15,7 @@ from simplifi.category_update import _FIELDS, EXCLUSION_FIELDS, verify_correctio
 from simplifi.constants import APP_BUILD, APP_RELEASE, BASE_URL, CLIENT_ID
 from simplifi.errors import ReadOnlyViolation, SimplifiError, SimplifiHTTPError
 from simplifi.journal_store import JournalStore
+from simplifi.review_compaction import archive_plan
 from simplifi.review_models import Review
 from simplifi.reviews import load_review, now, replace_encrypted, resolve_category
 from simplifi.rule_plan_models import OperationState, StrictModel
@@ -413,7 +414,9 @@ def _project(review_dir, plan, results, confirmation):
                 "verified_at": now(),
                 "outcomes": {str(r["id"]): "changed" for r in results.values()},
                 "results": results,
-                "relationship_plan": plan.to_wire(),
+                "relationship_plan_ref": archive_plan(
+                    review_dir, plan.to_wire(), confirmation, review
+                ),
             }
         )
         replace_encrypted(Path(review_dir) / "review.dpapi", Review.model_validate(wire).to_wire())

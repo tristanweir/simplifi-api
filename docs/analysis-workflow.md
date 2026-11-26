@@ -108,6 +108,19 @@ local writers; they do not lock remote account activity.
 HTML is regenerated only by explicit `render`. It shows original and current
 values, including first-seen records, and contains readable financial information.
 
+## Compact the encrypted review offline
+
+Run `simplifi-review compact --review .local/review` to move embedded relationship
+plans into the review's encrypted `plans/` directory. Keep this directory with
+the review. History retains the operation digest, results and outcomes. New
+relationship executions use the same archive.
+
+Before converting any entries, the command saves a byte-verified encrypted
+`precompact-*.dpapi` backup. It checks each plan's full SHA-256 digest and
+verifies the staged review, findings and execution outcomes before replacing
+`review.dpapi`. Running it again checks the archives without making another
+backup. The backup and archives occupy additional disk space.
+
 ## Investigate rule amount boundaries
 
 ```powershell

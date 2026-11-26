@@ -474,3 +474,50 @@ def test_link_keeps_full_preflight_and_readback(tmp_path, monkeypatch):
     execute_relationship_plan(client, path, **kw)
     assert client.transactions.call_count == 3
     assert calls == ["link"]
+
+
+@pytest.mark.parametrize("damage", [None, "digest", "archive", "staging"])
+def test_compaction_verifies_backups_history_and_plan_archive(tmp_path, monkeypatch, damage):
+    from simplifi import review_compaction as compact
+    from simplifi.transaction_rules import digest
+
+    directory, client, store = setup_review(tmp_path)
+    path, kw = prepare(directory, client, tmp_path, "link")
+    monkeypatch.setattr("simplifi.relationship_plans._send", writer(store, []))
+    execute_relationship_plan(client, path, **kw)
+    source = directory / "review.dpapi"
+    wire = load_encrypted(source)
+    entry = wire["history"][-1]
+    assert "relationship_plan" not in entry
+    archive = directory / entry.pop("relationship_plan_ref")
+    plan = entry["relationship_plan"] = load_encrypted(path)
+    assert digest(load_encrypted(archive)) == entry["plan_digest"] == digest(plan)
+    if damage == "archive":
+        replace_encrypted(archive, {})
+    else:
+        archive.unlink()
+    if damage == "digest":
+        entry["plan_digest"] = "0" * 64
+    if damage == "staging":
+        monkeypatch.setattr(
+            compact,
+            "save_encrypted",
+            lambda path, value: save_encrypted(path, {**value, "findings": [], "decisions": []}),
+        )
+    replace_encrypted(source, wire)
+    original = source.read_bytes()
+    if damage:
+        with pytest.raises(SimplifiError):
+            compact.compact_review(directory)
+        assert source.read_bytes() == original
+    else:
+        result = compact.compact_review(directory)
+        assert result["compacted"] == result["verified_plans"] == 1
+        assert load_review(directory).findings == Review.model_validate(wire).findings
+        assert digest(load_encrypted(archive)) == digest(plan)
+        assert compact.compact_review(directory)["backup"] is None
+        archive.unlink()
+        with pytest.raises(SimplifiError):
+            compact.compact_review(directory)
+    (backup,) = directory.glob("precompact-*.dpapi")
+    assert backup.read_bytes() == original

@@ -14,6 +14,7 @@ from simplifi.relationship_plans import (
     inspect_relationship_plan,
     prepare_relationship_plan,
 )
+from simplifi.review_compaction import compact_review
 from simplifi.review_import import build_legacy_import, import_legacy_review
 from simplifi.review_management import (
     attach_evidence,
@@ -55,6 +56,7 @@ def main(argv=None):
     download.add_argument("--start", type=date.fromisoformat, required=True)
     download.add_argument("--end", type=date.fromisoformat, required=True)
     commands.add_parser("summary", parents=[review_args])
+    commands.add_parser("compact", parents=[review_args])
     commands.add_parser("inventory", parents=[review_args])
     reconcile = commands.add_parser("reconcile", parents=[review_args])
     reconcile.add_argument("--transaction-id", required=True)
@@ -188,6 +190,8 @@ def main(argv=None):
             )
         elif args.command == "receipt-inspect":
             result = inspect_transaction_receipt(args.receipt)
+        elif args.command == "compact":
+            result = compact_review(args.review)
         elif args.command == "summary":
             result = review_summary(load_review(args.review))
         elif args.command == "inventory":
