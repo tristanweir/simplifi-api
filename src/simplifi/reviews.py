@@ -5,6 +5,8 @@ from __future__ import annotations
 import html
 import os
 from collections import Counter, defaultdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -21,11 +23,41 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+_task_reviews = ContextVar("task_reviews", default=None)
+
+
+@contextmanager
+def review_task():
+    """Reuse validated disk reads within one CLI invocation or library workflow."""
+    token = _task_reviews.set({})
+    try:
+        yield
+    finally:
+        _task_reviews.reset(token)
+
+
+def _file_versions(directory):
+    versions = []
+    for name in ("review.dpapi", "original.dpapi"):
+        stat = (directory / name).stat()
+        versions.append((stat.st_ino, stat.st_size, stat.st_mtime_ns))
+    return tuple(versions)
+
+
 def load_review(directory):
+    cache = _task_reviews.get()
+    directory = Path(directory).resolve()
+    if cache is not None:
+        version = _file_versions(directory)
+        entry = cache.get(directory)
+        if entry and entry[0] == version:
+            return entry[1].model_copy(deep=True)
     try:
         review = Review.model_validate(load_encrypted(Path(directory) / "review.dpapi"))
         if load_encrypted(Path(directory) / "original.dpapi") != review.original.to_wire():
             raise SimplifiError("Immutable original differs from review")
+        if cache is not None and version == _file_versions(directory):
+            cache[directory] = (version, review.model_copy(deep=True))
         return review
     except (ValueError, KeyError, TypeError):
         raise SimplifiError("Invalid encrypted review; details suppressed") from None
@@ -312,6 +344,7 @@ def download_review(client, directory, *, start, end):
         raise SimplifiError("Resolve a dataset before downloading")
     if start > end:
         raise SimplifiError("Invalid date range")
+    started = now()
     transactions = [
         t
         for t in client.transactions(date_on_after=start.isoformat())
@@ -319,14 +352,20 @@ def download_review(client, directory, *, start, end):
     ]
     snapshot = Snapshot(
         dataset_id=client.dataset_id,
-        downloaded_at=now(),
+        downloaded_at=started,
         start=start,
         end=end,
         transactions=transactions,
         categories=client.categories(),
         accounts=client.accounts(),
     )
-    review = Review(id=uuid4().hex, original=snapshot, current=snapshot, findings=analyze(snapshot))
+    review = Review(
+        id=uuid4().hex,
+        original=snapshot,
+        current=snapshot,
+        findings=analyze(snapshot),
+        context={"sync_cursor": started},
+    )
     create_review(directory, review)
     return review_summary(review)
 

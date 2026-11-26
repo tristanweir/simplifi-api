@@ -448,3 +448,29 @@ def test_bad_relationship_selection_does_not_download_history(tmp_path, action, 
         )
     client.transactions.assert_not_called()
     client.transaction.assert_not_called()
+
+
+def test_link_checks_selected_rows_against_single_preparation_scan(tmp_path):
+    directory, client, store = setup_review(tmp_path)
+
+    def changed_register():
+        rows = copy.deepcopy(list(store.values()))
+        rows[0]["memo"] = "Changed while preparing"
+        return rows
+
+    client.transactions.side_effect = changed_register
+    with pytest.raises(SimplifiError, match="changed during preparation"):
+        prepare(directory, client, tmp_path, "link")
+    client.transactions.assert_called_once_with()
+    assert not (tmp_path / "relationship.dpapi").exists()
+
+
+def test_link_keeps_full_preflight_and_readback(tmp_path, monkeypatch):
+    directory, client, store = setup_review(tmp_path)
+    path, kw = prepare(directory, client, tmp_path, "link")
+    client.transactions.assert_called_once_with()
+    calls = []
+    monkeypatch.setattr("simplifi.relationship_plans._send", writer(store, calls))
+    execute_relationship_plan(client, path, **kw)
+    assert client.transactions.call_count == 3
+    assert calls == ["link"]

@@ -175,8 +175,8 @@ def prepare_relationship_plan(
     cached = {str(t["id"]): t for t in review.current.transactions}
     if not set(transaction_ids) <= cached.keys():
         raise ReadOnlyViolation("Refresh selected records into the review first")
-    baseline = _records(client.transactions())
-    if not set(transaction_ids) <= baseline.keys():
+    initial = None if action == "link" else _records(client.transactions())
+    if initial is not None and not set(transaction_ids) <= initial.keys():
         raise ReadOnlyViolation("Selected transaction missing from API snapshot")
     originals = [client.transaction(tid) for tid in transaction_ids]
     if any(str(t.get("id")) != tid for tid, t in zip(transaction_ids, originals)):
@@ -200,6 +200,11 @@ def prepare_relationship_plan(
     series = _records(client.scheduled_transactions()) if action == "unlink_recurring" else {}
     if action == "unlink_recurring" and str(originals[0]["stModelId"]) not in series:
         raise ReadOnlyViolation("Recurring series missing")
+    baseline = _records(client.transactions())
+    if initial is not None and initial != baseline:
+        raise SimplifiError("Transactions changed during preparation")
+    if any(baseline.get(str(t["id"])) != t for t in originals):
+        raise SimplifiError("Selected transactions changed during preparation")
     plan = RelationshipPlan(
         dataset_id=client.dataset_id,
         review_id=review.id,
@@ -213,8 +218,6 @@ def prepare_relationship_plan(
             )
         ],
     )
-    if _records(client.transactions()) != baseline:
-        raise SimplifiError("Transactions changed during preparation")
     if client.categories() != categories or (
         action == "unlink_recurring" and _records(client.scheduled_transactions()) != series
     ):

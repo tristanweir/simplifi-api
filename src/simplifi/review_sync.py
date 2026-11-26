@@ -97,7 +97,9 @@ def set_review_preferences(directory, value):
     return {"saved": True, "live_changes": False, "reanalyze_required": True}
 
 
-def sync_review(client, directory, *, modified_after=None):
+def sync_review(client, directory, *, modified_after=None, full=False):
+    if full and modified_after is not None:
+        raise SimplifiError("Full sync and modified-after cannot be combined")
     if modified_after is not None:
         if not isinstance(modified_after, str):
             raise SimplifiError("Modified-after must be an ISO timestamp with timezone")
@@ -111,6 +113,19 @@ def sync_review(client, directory, *, modified_after=None):
         review = load_review(directory)
         if client.dataset_id != review.current.dataset_id:
             raise SimplifiError("Dataset differs from review")
+        cursor = review.context.get("sync_cursor")
+        if cursor is None:
+            # Older full syncs recorded their start before fetching any pages.
+            cursor = next(
+                (
+                    h["started_at"]
+                    for h in reversed(review.history)
+                    if h.get("kind") == "sync" and h.get("modified_after") is None
+                ),
+                None,
+            )
+        if modified_after is None and not full:
+            modified_after = cursor
         started = now()
         cached = {str(t["id"]): t for t in review.current.transactions}
         # A delta is unbounded by date so moved records and tombstones can be observed.
@@ -173,6 +188,13 @@ def sync_review(client, directory, *, modified_after=None):
         for c in wire["current"]["categories"]:
             if str(c["id"]) not in original_categories:
                 wire["context"].setdefault("added_categories", {}).setdefault(str(c["id"]), c)
+        # A manually narrowed delta cannot establish coverage across a gap.
+        if modified_after is None or (
+            cursor
+            and datetime.fromisoformat(modified_after.replace("Z", "+00:00"))
+            <= datetime.fromisoformat(cursor.replace("Z", "+00:00"))
+        ):
+            wire["context"]["sync_cursor"] = started
         wire["context"]["sync_issues"] = list(issues.values())
         wire["history"].append(
             {

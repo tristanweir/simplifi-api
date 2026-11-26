@@ -514,3 +514,50 @@ def test_bad_sync_cursor_fails_before_api_reads(setup, cursor):
     with pytest.raises(SimplifiError, match="Modified-after"):
         sync_review(client, directory, modified_after=cursor)
     client.transactions.assert_not_called()
+
+
+def test_default_sync_cursor_and_full_override(setup):
+    directory, client, _ = setup
+    assert not sync_review(client, directory)["delta"]
+    cursor = load_review(directory).context["sync_cursor"]
+    sync_review(client, directory, modified_after="2099-01-01T00:00:00Z")
+    assert load_review(directory).context["sync_cursor"] == cursor
+    assert sync_review(client, directory)["delta"]
+    client.transactions.assert_called_with(modified_after=cursor)
+    assert not sync_review(client, directory, full=True)["delta"]
+    client.transactions.assert_called_with(date_on_after="2027-01-01")
+
+
+def test_review_task_reuses_reads_and_observes_replacements(setup, monkeypatch):
+    from simplifi import reviews
+
+    directory, _, _ = setup
+    reads = Mock(wraps=reviews.load_encrypted)
+    monkeypatch.setattr(reviews, "load_encrypted", reads)
+    with reviews.review_task():
+        first = load_review(directory)
+        first.context["only_in_memory"] = True
+        assert "only_in_memory" not in load_review(directory).context
+        assert reads.call_count == 2
+        reviews.replace_encrypted(directory / "review.dpapi", first.to_wire())
+        assert load_review(directory).context["only_in_memory"]
+        assert reads.call_count == 4
+        reviews.replace_encrypted(directory / "original.dpapi", {})
+        with pytest.raises(SimplifiError, match="Immutable original"):
+            load_review(directory)
+
+
+def test_cli_sync_reuses_review_for_dataset_and_honors_full_flag(setup, monkeypatch):
+    from simplifi import reviews
+    from simplifi.review_cli import main
+
+    directory, client, _ = setup
+    monkeypatch.setattr("simplifi.review_cli.Client", lambda dataset_id: client)
+    reads = Mock(wraps=reviews.load_encrypted)
+    monkeypatch.setattr(reviews, "load_encrypted", reads)
+    main(["sync", "--review", str(directory)])
+    assert reads.call_count == 2  # One read each of the review and immutable original.
+    main(["sync", "--review", str(directory)])
+    assert set(client.transactions.call_args.kwargs) == {"modified_after"}
+    main(["sync", "--review", str(directory), "--full"])
+    client.transactions.assert_called_with(date_on_after="2027-01-01")

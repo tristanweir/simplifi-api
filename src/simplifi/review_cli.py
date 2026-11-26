@@ -31,6 +31,7 @@ from simplifi.reviews import (
     reimbursement_candidates,
     render_review,
     review_summary,
+    review_task,
 )
 from simplifi.transaction_plans import (
     execute_transaction_plan,
@@ -43,6 +44,7 @@ from simplifi.transaction_plans import (
 from simplifi.transaction_rules import load_encrypted
 
 
+@review_task()
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Encrypted Simplifi transaction reviews")
     parser.add_argument("--dataset-id")
@@ -63,7 +65,9 @@ def main(argv=None):
     pref.add_argument("--stdin", action="store_true", required=True)
     commands.add_parser("analyze", parents=[review_args])
     sync = commands.add_parser("sync", parents=[review_args])
-    sync.add_argument(
+    mode = sync.add_mutually_exclusive_group()
+    mode.add_argument("--full", action="store_true", help="Reconcile the whole review date range")
+    mode.add_argument(
         "--modified-after", help="Optional server delta cursor; ISO timestamp with timezone"
     )
     rel = commands.add_parser("relationship-plan", parents=[review_args])
@@ -246,7 +250,9 @@ def main(argv=None):
             elif args.command == "refresh":
                 result = refresh_transactions(client, args.review, args.transaction_id)
             elif args.command == "sync":
-                result = sync_review(client, args.review, modified_after=args.modified_after)
+                result = sync_review(
+                    client, args.review, modified_after=args.modified_after, full=args.full
+                )
             elif args.command == "receipt-import":
                 result = import_transaction_receipt(
                     client,

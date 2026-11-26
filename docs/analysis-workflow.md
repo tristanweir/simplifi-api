@@ -78,10 +78,15 @@ dismissing them when context changes.
 
 ```powershell
 simplifi-review sync --review .local/review
+simplifi-review sync --review .local/review --full
 simplifi-review sync --review .local/review --modified-after 2027-01-01T00:00:00Z
 simplifi-review unresolved --review .local/review
 simplifi-review render --review .local/review --output .local/review/report.html
 ```
+
+By default, sync requests changes since the last covered pull began. A review without a reliable cursor starts with a full sync. Use `--full` for an explicit audit. A narrower manual cursor cannot advance the automatic cursor across a gap.
+
+Use `with simplifi.reviews.review_task():` around related library calls to share validated reads for the duration of the task. CLI commands do this automatically. Replacing either encrypted review file triggers a fresh read.
 
 Full sync reads the review date window and looks up previously cached records
 missing from the list. A delta reads modifications without a date filter so it

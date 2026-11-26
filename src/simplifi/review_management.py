@@ -139,11 +139,12 @@ def refresh_transactions(client, directory, transaction_ids):
         if any(str(t.get("id")) != tid for tid, t in results.items()):
             raise SimplifiError("Refresh returned a different transaction ID")
         wire, changed = refreshed_wire(review, results)
-        replace_encrypted(Path(directory) / "review.dpapi", Review.model_validate(wire).to_wire())
+        updated = Review.model_validate(wire)
+        replace_encrypted(Path(directory) / "review.dpapi", updated.to_wire())
     return {
         "refreshed": len(results),
         "changed": len(changed),
-        "summary": review_summary(load_review(directory)),
+        "summary": review_summary(updated),
     }
 
 
